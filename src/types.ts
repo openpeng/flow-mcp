@@ -25,13 +25,30 @@ export interface RequiredOutputDef {
 
 export type RequiredOutput = string | RequiredOutputDef;
 
+export interface EvidenceDef {
+  key: string;
+  required?: boolean;
+  description?: string;
+}
+
+export interface ApprovalDef {
+  key: string;
+  required?: boolean;
+  description?: string;
+}
+
+export interface CheckpointDef {
+  required_outputs?: RequiredOutput[] | Record<string, RequiredOutputDef>;
+  optional_outputs?: Record<string, RequiredOutputDef>;
+  evidence?: EvidenceDef[];
+  approvals?: ApprovalDef[];
+  conditions?: Condition[];
+}
+
 export interface WorkflowStep {
   id: string;
   name: string;
-  checkpoint?: {
-    required_outputs?: RequiredOutput[] | Record<string, RequiredOutputDef>;
-    conditions?: Condition[];
-  };
+  checkpoint?: CheckpointDef;
   next: string | null | Record<string, string>;
 }
 
@@ -129,7 +146,7 @@ export interface ListInstancesResult {
 }
 
 export interface CheckpointValidationError {
-  kind: 'required_output' | 'type' | 'min_length' | 'pattern' | 'condition' | 'check' | 'expression';
+  kind: 'required_output' | 'type' | 'min_length' | 'pattern' | 'condition' | 'check' | 'expression' | 'evidence' | 'approval';
   field?: string;
   message: string;
   help?: string;
@@ -144,6 +161,8 @@ export interface AdvanceOptions {
   condition_result?: string;
   confirmed_conditions?: string[];
   token_consumed?: number;
+  evidence?: Record<string, unknown>;
+  approvals?: Record<string, unknown>;
 }
 
 export interface WorkflowCurrentResult {
@@ -167,4 +186,91 @@ export interface CreateTemplateOptions {
   prompts: Record<string, string>;
   token_budget?: TokenBudget;
   overwrite?: boolean;
+}
+
+export interface WorkflowEventsQuery {
+  type?: WorkflowEventType;
+  step_id?: string;
+  limit?: number;
+}
+
+export interface CheckpointInspectionResult {
+  completed: string[];
+  missing_required: string[];
+  optional_missing: string[];
+  missing_evidence: string[];
+  missing_approvals: string[];
+  can_advance: boolean;
+  blocking_reasons: string[];
+}
+
+export interface InboxEntry {
+  id: string;
+  instance_id: string;
+  source: 'manual' | 'git' | 'ci' | 'review' | 'tapd' | 'other';
+  type: 'comment' | 'failure' | 'approval' | 'blocker' | 'info';
+  title: string;
+  summary: string;
+  action_required: boolean;
+  status: 'new' | 'seen' | 'acted';
+  timestamp: string;
+  external_id?: string;
+  url?: string;
+  dedup_key?: string;
+  dedup_strategy?: 'external_id' | 'fallback';
+}
+
+export type InboxStatus = InboxEntry['status'];
+
+export interface InboxSummary {
+  total: number;
+  unread: number;
+  action_required: number;
+  by_status: Record<InboxStatus, number>;
+  latest_timestamp?: string;
+}
+
+export interface WorkflowDashboardResult {
+  instance: {
+    id: string;
+    template: string;
+    status: WorkflowStatus;
+    current_step: string;
+    version: number;
+  };
+  current_step: {
+    id: string;
+    name: string;
+    checkpoint?: CheckpointDef;
+  };
+  prompt?: string;
+  outputs: CheckpointInspectionResult;
+  checkpoint: {
+    can_advance: boolean;
+    blocking_reasons: string[];
+  };
+  recent_events?: WorkflowEvent[];
+  inbox?: InboxSummary & { entries?: InboxEntry[] };
+  suggested_actions: string[];
+}
+
+export interface WorkflowWorklogResult {
+  markdown: string;
+  summary: {
+    completed_steps: number;
+    failed_validations: number;
+    latest_step: string;
+  };
+}
+
+export interface ValidationIssue {
+  code: string;
+  message: string;
+  step_id?: string;
+}
+
+export interface TemplateValidationResult {
+  valid: boolean;
+  errors: ValidationIssue[];
+  warnings: ValidationIssue[];
 }

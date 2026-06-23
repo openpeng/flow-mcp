@@ -148,7 +148,7 @@ export function advanceWorkflow(
     throw new Error(`Token budget exhausted: ${proposedConsumed} / ${template.token_budget.total}`);
   }
 
-  const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? []);
+  const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? [], options.evidence ?? {}, options.approvals ?? {});
   if (!validation.ok) {
     recordEvent('step.validation_failed', instance.id, { errors: validation.errors }, step.id, overrides);
     const message = validation.errors.map(error => `${error.message}${error.help ? ` (${error.help})` : ''}`).join('; ');

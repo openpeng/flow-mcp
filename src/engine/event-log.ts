@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
-import type { WorkflowEvent, WorkflowEventType } from '../types.js';
+import type { WorkflowEvent, WorkflowEventType, WorkflowEventsQuery } from '../types.js';
 import { assertInstanceId, assertStepId, safeJoin } from './security.js';
 
 function eventsDir(overrides: ConfigOverrides = {}): string {
@@ -52,6 +52,21 @@ export function readEvents(instanceId: string, overrides: ConfigOverrides = {}):
     }
   }
   return events;
+}
+
+export function queryEvents(instanceId: string, query: WorkflowEventsQuery = {}, overrides: ConfigOverrides = {}): WorkflowEvent[] {
+  if (query.step_id) assertStepId(query.step_id);
+  const limit = normalizeLimit(query.limit);
+  const events = readEvents(instanceId, overrides)
+    .filter(event => !query.type || event.type === query.type)
+    .filter(event => !query.step_id || event.step_id === query.step_id);
+  return events.slice(-limit);
+}
+
+function normalizeLimit(limit: number | undefined): number {
+  if (limit === undefined) return 50;
+  if (!Number.isFinite(limit) || limit < 1) throw new Error('INVALID_ARGUMENT: limit must be a positive number');
+  return Math.min(Math.floor(limit), 200);
 }
 
 function isWorkflowEvent(value: Partial<WorkflowEvent>): value is WorkflowEvent {

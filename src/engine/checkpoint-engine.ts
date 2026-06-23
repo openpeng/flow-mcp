@@ -12,9 +12,13 @@ export function validateCheckpoint(
   step: WorkflowStep,
   outputs: Record<string, unknown>,
   confirmedConditions: string[] = [],
+  evidence: Record<string, unknown> = {},
+  approvals: Record<string, unknown> = {},
 ): CheckpointValidationResult {
   const errors: CheckpointValidationError[] = [];
   validateRequiredOutputs(step, outputs, errors);
+  validateEvidence(step, evidence, errors);
+  validateApprovals(step, approvals, errors);
   validateConditions(step, outputs, confirmedConditions, errors);
   return { ok: errors.length === 0, errors };
 }
@@ -27,7 +31,7 @@ function validateRequiredOutputs(step: WorkflowStep, outputs: Record<string, unk
 
   for (const [key, def] of entries) {
     if (typeof def === 'string') {
-      if (!(def in outputs) || outputs[def] === undefined || outputs[def] === null) {
+      if (!hasValue(outputs[def])) {
         errors.push({ kind: 'required_output', field: def, message: `Output required: ${def}` });
       }
       continue;
@@ -35,7 +39,7 @@ function validateRequiredOutputs(step: WorkflowStep, outputs: Record<string, unk
 
     if (!key) continue;
     const value = outputs[key];
-    if (value === undefined || value === null) {
+    if (!hasValue(value)) {
       errors.push({ kind: 'required_output', field: key, message: `Output required: ${key}`, help: def.help });
       continue;
     }
@@ -56,6 +60,38 @@ function validateRequiredOutputs(step: WorkflowStep, outputs: Record<string, unk
       }
     }
   }
+}
+
+function validateEvidence(step: WorkflowStep, evidence: Record<string, unknown>, errors: CheckpointValidationError[]): void {
+  for (const def of step.checkpoint?.evidence ?? []) {
+    if (!def?.key || def.required === false) continue;
+    if (!hasValue(evidence[def.key])) {
+      errors.push({ kind: 'evidence', field: def.key, message: `Evidence required: ${def.key}`, help: def.description });
+    }
+  }
+}
+
+function validateApprovals(step: WorkflowStep, approvals: Record<string, unknown>, errors: CheckpointValidationError[]): void {
+  for (const def of step.checkpoint?.approvals ?? []) {
+    if (!def?.key || def.required === false) continue;
+    if (!isApproved(approvals[def.key])) {
+      errors.push({ kind: 'approval', field: def.key, message: `Approval required: ${def.key}`, help: def.description });
+    }
+  }
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== '';
+}
+
+function isApproved(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string') return ['true', 'approved', 'pass', 'yes', 'confirmed'].includes(value.toLowerCase());
+  if (value && typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    return record.approved === true || record.status === 'approved' || record.confirmed === true;
+  }
+  return false;
 }
 
 function matchesType(value: unknown, type: string): boolean {
@@ -138,6 +174,19 @@ export function evaluateCheckExpression(expression: string, outputs: Record<stri
   }
 }
 
+export function validateCheckExpressionSyntax(expression: string): { ok: boolean; error?: string } {
+  try {
+    collectExpressionReferences(stripOuterParens(expression.trim()));
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export function collectCheckExpressionOutputRefs(expression: string): string[] {
+  return collectExpressionReferences(stripOuterParens(expression.trim()));
+}
+
 function evalExpression(expression: string, outputs: Record<string, unknown>): boolean {
   const expr = stripOuterParens(expression.trim());
   const orParts = splitLogical(expr, 'OR');
@@ -145,6 +194,19 @@ function evalExpression(expression: string, outputs: Record<string, unknown>): b
   const andParts = splitLogical(expr, 'AND');
   if (andParts.length > 1) return andParts.every(part => evalExpression(part, outputs));
   return evalAtomic(expr, outputs);
+}
+
+function collectExpressionReferences(expression: string): string[] {
+  const expr = stripOuterParens(expression.trim());
+  const orParts = splitLogical(expr, 'OR');
+  if (orParts.length > 1) return unique(orParts.flatMap(collectExpressionReferences));
+  const andParts = splitLogical(expr, 'AND');
+  if (andParts.length > 1) return unique(andParts.flatMap(collectExpressionReferences));
+  return collectAtomicReference(expr);
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function stripOuterParens(expression: string): string {
@@ -195,6 +257,17 @@ function evalAtomic(expression: string, outputs: Record<string, unknown>): boole
   if (match) return String(resolveOutput(outputs, match[1])) === match[2];
   match = expr.match(/^len\(outputs\.([A-Za-z0-9_.-]+)\)\s*>\s*(\d+)$/);
   if (match) return lengthOf(resolveOutput(outputs, match[1])) > Number(match[2]);
+  throw new Error(`Unsupported expression: ${expression}`);
+}
+
+function collectAtomicReference(expression: string): string[] {
+  const expr = expression.trim();
+  let match = expr.match(/^outputs\.([A-Za-z0-9_.-]+)\s*(?:!=|==)\s*null$/);
+  if (match) return [match[1]];
+  match = expr.match(/^outputs\.([A-Za-z0-9_.-]+)\s*==\s*'[^']*'$/);
+  if (match) return [match[1]];
+  match = expr.match(/^len\(outputs\.([A-Za-z0-9_.-]+)\)\s*>\s*\d+$/);
+  if (match) return [match[1]];
   throw new Error(`Unsupported expression: ${expression}`);
 }
 

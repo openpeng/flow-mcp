@@ -9,12 +9,19 @@ test('tool list exposes workflow tools only', () => {
     'workflow_bind',
     'workflow_create_template',
     'workflow_current',
+    'workflow_dashboard',
+    'workflow_events',
     'workflow_get_template',
+    'workflow_inbox_list',
+    'workflow_inbox_mark',
+    'workflow_inbox_save',
     'workflow_list_instances',
     'workflow_list_templates',
     'workflow_override_prompt',
     'workflow_start',
     'workflow_status',
+    'workflow_validate_template',
+    'workflow_worklog',
   ]);
   assert.equal(names.some(name => name.startsWith('flow_memory_') || name.startsWith('flow_inbox_') || name === 'flow_init'), false);
 });

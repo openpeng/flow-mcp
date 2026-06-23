@@ -103,3 +103,37 @@ test('running instances use template and prompt snapshots after template deletio
     rmSync(config.homeDir, { recursive: true, force: true });
   }
 });
+
+test('advanceWorkflow blocks on missing required evidence and approval', () => {
+  const config = tempConfig();
+  try {
+    createTemplate({
+      name: 'approval-demo',
+      description: 'Approval demo',
+      params: {},
+      steps: [{
+        id: 'verify',
+        name: 'Verify',
+        checkpoint: {
+          required_outputs: ['summary'],
+          evidence: [{ key: 'test_log', required: true }],
+          approvals: [{ key: 'user_confirmed', required: true }],
+        },
+        next: null,
+      }],
+      prompts: { verify: 'verify' },
+    }, config);
+    const started = startWorkflow('approval-demo', {}, undefined, config);
+    assert.throws(() => advanceWorkflow(started.instance.id, { summary: 'ok' }, {}, config), /Checkpoint validation failed/);
+    assert.equal(loadInstance(started.instance.id, config).steps.verify.status, 'in_progress');
+    assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
+
+    const completed = advanceWorkflow(started.instance.id, { summary: 'ok' }, {
+      evidence: { test_log: 'passed' },
+      approvals: { user_confirmed: true },
+    }, config);
+    assert.equal(completed.completed, true);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
