@@ -1,0 +1,50 @@
+name: basic-dev
+description: Minimal Agent-native development workflow
+params:
+  change_name:
+    type: string
+    required: true
+    description: Change name or workflow subject
+token_budget:
+  total: 50000
+  per_step: 8000
+steps:
+  - id: analyze
+    name: Analyze
+    checkpoint:
+      required_outputs:
+        analysis_summary:
+          type: string
+          min_length: 20
+          help: Provide a concise analysis summary.
+      conditions:
+        - natural: analysis_summary has been produced
+          check: outputs.analysis_summary != null AND len(outputs.analysis_summary) > 20
+          help: Confirm the analysis summary is complete enough to guide design.
+    next: design
+  - id: design
+    name: Design
+    checkpoint:
+      required_outputs:
+        design_summary:
+          type: string
+          min_length: 20
+          help: Provide a concrete design summary.
+      conditions:
+        - natural: design_summary has been produced
+          check: outputs.design_summary != null AND len(outputs.design_summary) > 20
+          help: Confirm the design summary covers the implementation approach.
+    next: verify
+  - id: verify
+    name: Verify
+    checkpoint:
+      required_outputs:
+        verification_result:
+          type: string
+          min_length: 5
+          help: Provide the verification result.
+      conditions:
+        - natural: verification_result has been produced
+          check: outputs.verification_result != null
+          help: Confirm verification has been completed.
+    next: null

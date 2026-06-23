@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Runtime data
+.oflow-mcp/
+instances/
+*.tmp
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Package manager caches
+.npm/
+.yarn/
+.pnpm-store/
+
+# Test artifacts
+.nyc_output/
+test-results/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local Claude / agent files
+.claude/
+
+# External delivery bundles
+*-external/

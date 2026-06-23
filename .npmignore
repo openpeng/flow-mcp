@@ -1,0 +1,38 @@
+# Source-only / development files
+src/**/*.test.ts
+dist/**/*.test.js
+coverage/
+.nyc_output/
+test-results/
+
+# Local dependencies and caches
+node_modules/
+.npm/
+.yarn/
+.pnpm-store/
+
+# Runtime/local data
+.oflow-mcp/
+instances/
+*.tmp
+*.log
+.env
+.env.*
+!.env.example
+
+# Git and agent metadata
+.git/
+.gitignore
+.claude/
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+
+# External delivery bundles
+*-external/

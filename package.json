@@ -1,0 +1,26 @@
+{
+  "name": "oflow-mcp",
+  "version": "0.1.0",
+  "description": "Agent-native workflow kernel MCP server",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "oflow-mcp": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "test": "node --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "js-yaml": "^4.1.0",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
