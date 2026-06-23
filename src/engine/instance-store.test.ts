@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { bindAlias, listInstances, loadInstance, saveInstance } from './instance-store.js';
@@ -89,6 +89,27 @@ test('instance id and alias path traversal inputs are rejected', () => {
     saveInstance(instance('wf_20260101000000_abc123'), config);
     assert.throws(() => loadInstance('../../evil', config), /INVALID_INSTANCE_ID/);
     assert.throws(() => bindAlias('wf_20260101000000_abc123', '../bad', config), /INVALID_ALIAS/);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('reserved Windows aliases are rejected', () => {
+  const config = tempConfig();
+  try {
+    saveInstance(instance('wf_20260101000000_abc123'), config);
+    assert.throws(() => bindAlias('wf_20260101000000_abc123', 'CON', config), /INVALID_ALIAS/);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('saveInstance rejects updates while instance lock exists', () => {
+  const config = tempConfig();
+  try {
+    saveInstance(instance('wf_20260101000000_abc123'), config);
+    mkdirSync(join(config.dataDir, 'wf_20260101000000_abc123.lock'));
+    assert.throws(() => saveInstance(instance('wf_20260101000000_abc123'), config, { expectedVersion: 1 }), /INSTANCE_LOCKED/);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }

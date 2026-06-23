@@ -66,3 +66,26 @@ test('createTemplate rejects path traversal names and step ids', () => {
     rmSync(config.homeDir, { recursive: true, force: true });
   }
 });
+
+test('createTemplate rejects reserved filesystem names', () => {
+  const config = tempConfig();
+  try {
+    assert.throws(() => createTemplate({
+      name: 'CON',
+      description: 'Reserved template',
+      params: {},
+      steps: [{ id: 'one', name: 'One', next: null }],
+      prompts: { one: 'prompt' },
+    }, config), /INVALID_TEMPLATE_NAME/);
+
+    assert.throws(() => createTemplate({
+      name: 'reserved-step',
+      description: 'Reserved step',
+      params: {},
+      steps: [{ id: 'NUL', name: 'Reserved', next: null }],
+      prompts: { NUL: 'prompt' },
+    }, config), /INVALID_STEP_ID/);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});

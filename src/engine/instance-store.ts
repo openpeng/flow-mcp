@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmdirSync, writeFileSync } from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
 import type { ListInstancesResult, WorkflowInstance, WorkflowStatus } from '../types.js';
@@ -15,6 +15,25 @@ function instancePath(id: string, overrides: ConfigOverrides = {}): string {
   return safeJoin(instancesDir(overrides), `${id}.json`);
 }
 
+function lockPath(id: string, overrides: ConfigOverrides = {}): string {
+  assertInstanceId(id);
+  return safeJoin(instancesDir(overrides), `${id}.lock`);
+}
+
+function withInstanceLock<T>(id: string, overrides: ConfigOverrides, fn: () => T): T {
+  const path = lockPath(id, overrides);
+  try {
+    mkdirSync(path);
+  } catch {
+    throw new Error(`INSTANCE_LOCKED: ${id}`);
+  }
+  try {
+    return fn();
+  } finally {
+    try { rmdirSync(path); } catch { /* best effort cleanup */ }
+  }
+}
+
 export function newInstanceId(now = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
   const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
@@ -28,25 +47,31 @@ export interface SaveInstanceOptions {
 export function saveInstance(instance: WorkflowInstance, overrides: ConfigOverrides = {}, options: SaveInstanceOptions = {}): WorkflowInstance {
   const dir = instancesDir(overrides);
   mkdirSync(dir, { recursive: true });
-  const finalPath = instancePath(instance.id, overrides);
-  const exists = existsSync(finalPath);
+  return withInstanceLock(instance.id, overrides, () => {
+    const finalPath = instancePath(instance.id, overrides);
+    const exists = existsSync(finalPath);
 
-  if (exists) {
-    const current = loadInstance(instance.id, overrides);
-    if (options.expectedVersion !== undefined && current.version !== options.expectedVersion) {
-      recordEvent('instance.conflict_detected', instance.id, { expectedVersion: options.expectedVersion, actualVersion: current.version }, undefined, overrides);
-      throw new Error(`INSTANCE_VERSION_CONFLICT: Instance changed, reload before retrying`);
+    if (exists) {
+      const current = loadInstance(instance.id, overrides);
+      if (options.expectedVersion !== undefined && current.version !== options.expectedVersion) {
+        try {
+          recordEvent('instance.conflict_detected', instance.id, { expectedVersion: options.expectedVersion, actualVersion: current.version }, undefined, overrides);
+        } catch {
+          // Preserve the conflict error even if audit logging is unavailable.
+        }
+        throw new Error(`INSTANCE_VERSION_CONFLICT: Instance changed, reload before retrying`);
+      }
+      instance.version = current.version + 1;
+    } else {
+      instance.version = instance.version || 1;
     }
-    instance.version = current.version + 1;
-  } else {
-    instance.version = instance.version || 1;
-  }
 
-  assertInstanceSize(instance);
-  const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmpPath, JSON.stringify(instance, null, 2), 'utf-8');
-  renameSync(tmpPath, finalPath);
-  return instance;
+    assertInstanceSize(instance);
+    const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmpPath, JSON.stringify(instance, null, 2), 'utf-8');
+    renameSync(tmpPath, finalPath);
+    return instance;
+  });
 }
 
 export function loadInstance(id: string, overrides: ConfigOverrides = {}): WorkflowInstance {

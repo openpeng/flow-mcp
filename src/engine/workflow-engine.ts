@@ -10,8 +10,9 @@ import type {
   WorkflowTemplate,
 } from '../types.js';
 import { validateCheckpoint } from './checkpoint-engine.js';
-import { assertOutputsSize } from './limits.js';
+import { assertOutputsSize, assertPromptSize } from './limits.js';
 import { recordEvent } from './event-log.js';
+import { assertStepId } from './security.js';
 import {
   createTemplate,
   loadPromptSnapshots,
@@ -117,10 +118,16 @@ function templateForInstance(instance: WorkflowInstance, overrides: ConfigOverri
 }
 
 function promptForInstance(instance: WorkflowInstance, stepId: string, overrides: ConfigOverrides): string {
+  assertStepId(stepId);
   const snapshot = instance.prompt_snapshots?.[stepId];
   if (snapshot !== undefined) return snapshot;
+  if (instance.template_snapshot && instance.prompt_snapshots) {
+    throw new Error(`PROMPT_SNAPSHOT_MISSING: ${stepId}`);
+  }
   const prompts = loadPromptSnapshots(templateForInstance(instance, overrides), instance.template, overrides);
-  return prompts[stepId];
+  const prompt = prompts[stepId];
+  if (prompt === undefined) throw new Error(`Prompt not found in snapshot: ${stepId}`);
+  return prompt;
 }
 
 export function advanceWorkflow(
@@ -213,6 +220,8 @@ export function bindWorkflowAlias(instanceId: string, alias: string, overrides: 
 }
 
 export function overridePrompt(instanceIdOrAlias: string, stepId: string, prompt: string, overrides: ConfigOverrides = {}): WorkflowInstance {
+  assertStepId(stepId);
+  assertPromptSize(prompt);
   if (!prompt.trim()) throw new Error('Prompt must not be empty');
   const instance = resolveInstance(instanceIdOrAlias, overrides);
   const template = templateForInstance(instance, overrides);
@@ -230,6 +239,7 @@ export function createWorkflowTemplate(options: CreateTemplateOptions, overrides
 }
 
 function findStep(template: WorkflowTemplate, stepId: string): WorkflowStep {
+  assertStepId(stepId);
   const step = template.steps.find(candidate => candidate.id === stepId);
   if (!step) throw new Error(`Step not found in template ${template.name}: ${stepId}`);
   return step;
