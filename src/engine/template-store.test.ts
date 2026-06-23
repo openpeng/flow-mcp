@@ -43,3 +43,26 @@ test('createTemplate rejects broken next references', () => {
     rmSync(config.homeDir, { recursive: true, force: true });
   }
 });
+
+test('createTemplate rejects path traversal names and step ids', () => {
+  const config = tempConfig();
+  try {
+    assert.throws(() => createTemplate({
+      name: '../../evil',
+      description: 'Bad template',
+      params: {},
+      steps: [{ id: 'one', name: 'One', next: null }],
+      prompts: { one: 'prompt' },
+    }, config), /INVALID_TEMPLATE_NAME/);
+
+    assert.throws(() => createTemplate({
+      name: 'bad-step',
+      description: 'Bad step',
+      params: {},
+      steps: [{ id: '../one', name: 'One', next: null }],
+      prompts: { '../one': 'prompt' },
+    }, config), /INVALID_STEP_ID/);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});

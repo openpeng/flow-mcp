@@ -6,6 +6,7 @@ import { join } from 'path';
 import { createTemplate } from './template-store.js';
 import { advanceWorkflow, getCurrent, startWorkflow } from './workflow-engine.js';
 import { loadInstance } from './instance-store.js';
+import { readEvents } from './event-log.js';
 
 function tempConfig() {
   const homeDir = mkdtempSync(join(tmpdir(), 'oflow-workflow-'));
@@ -48,6 +49,9 @@ test('workflow full lifecycle completes', () => {
     const started = startWorkflow('demo', { change_name: 'feature' }, 'feature-run', config);
     assert.equal(started.step.id, 'analyze');
     assert.match(started.prompt, /feature/);
+    assert.equal(started.instance.version, 1);
+    assert.equal(started.instance.template_snapshot.name, 'demo');
+    assert.equal(started.instance.prompt_snapshots.analyze, 'Analyze {{change_name}}');
 
     const advanced = advanceWorkflow(started.instance.id, { analysis_summary: 'analysis is complete' }, {}, config);
     assert.equal(advanced.completed, false);
@@ -56,6 +60,14 @@ test('workflow full lifecycle completes', () => {
     const completed = advanceWorkflow(started.instance.id, { verification_result: 'pass' }, {}, config);
     assert.equal(completed.completed, true);
     assert.equal(loadInstance(started.instance.id, config).status, 'completed');
+    assert.deepEqual(readEvents(started.instance.id, config).map(event => event.type), [
+      'workflow.started',
+      'step.started',
+      'step.completed',
+      'step.started',
+      'step.completed',
+      'workflow.completed',
+    ]);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }
@@ -70,6 +82,23 @@ test('validation failure does not mutate state', () => {
     const current = getCurrent(started.instance.id, config);
     assert.equal(current.step.id, 'analyze');
     assert.equal(current.instance.steps.analyze.status, 'in_progress');
+    assert.equal(readEvents(started.instance.id, config).some(event => event.type === 'step.validation_failed'), true);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('running instances use template and prompt snapshots after template deletion', () => {
+  const config = tempConfig();
+  try {
+    createDemo(config);
+    const started = startWorkflow('demo', { change_name: 'feature' }, undefined, config);
+    rmSync(config.flowsDir, { recursive: true, force: true });
+    const current = getCurrent(started.instance.id, config);
+    assert.equal(current.step.id, 'analyze');
+    assert.match(current.prompt, /feature/);
+    const advanced = advanceWorkflow(started.instance.id, { analysis_summary: 'analysis is complete' }, {}, config);
+    assert.match(advanced.next_prompt ?? '', /analysis is complete/);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }

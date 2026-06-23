@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
-import { join } from 'path';
 import yaml from 'js-yaml';
 import { getConfig, type ConfigOverrides } from '../config.js';
+import { assertPromptSize } from './limits.js';
+import { assertStepId, assertTemplateName, safeJoin } from './security.js';
 import type {
   CreateTemplateOptions,
   ParamsDef,
@@ -24,11 +25,12 @@ export function normalizeParams(params: string[] | ParamsDef | undefined): Param
 }
 
 export function templateDir(name: string, overrides: ConfigOverrides = {}): string {
-  return join(getConfig(overrides).flowsDir, name);
+  assertTemplateName(name);
+  return safeJoin(getConfig(overrides).flowsDir, name);
 }
 
 function templatePath(name: string, overrides: ConfigOverrides = {}): string {
-  return join(templateDir(name, overrides), 'flow.yaml');
+  return safeJoin(templateDir(name, overrides), 'flow.yaml');
 }
 
 export function listTemplates(overrides: ConfigOverrides = {}): TemplateSummary[] {
@@ -39,8 +41,9 @@ export function listTemplates(overrides: ConfigOverrides = {}): TemplateSummary[
     .filter(entry => entry.isDirectory())
     .map(entry => {
       const name = entry.name;
-      const path = templateDir(name, overrides);
+      let path = safeJoin(flowsDir, name);
       try {
+        path = templateDir(name, overrides);
         const template = loadTemplate(name, overrides);
         return {
           name: template.name,
@@ -77,9 +80,20 @@ export function loadTemplate(name: string, overrides: ConfigOverrides = {}): Wor
 }
 
 export function loadPrompt(templateName: string, stepId: string, overrides: ConfigOverrides = {}): string {
-  const path = join(templateDir(templateName, overrides), 'prompts', `${stepId}.md`);
+  assertStepId(stepId);
+  const path = safeJoin(templateDir(templateName, overrides), 'prompts', `${stepId}.md`);
   if (!existsSync(path)) throw new Error(`Prompt not found for ${templateName}/${stepId}: ${path}`);
-  return readFileSync(path, 'utf-8');
+  const prompt = readFileSync(path, 'utf-8');
+  assertPromptSize(prompt);
+  return prompt;
+}
+
+export function loadPromptSnapshots(template: WorkflowTemplate, templateName = template.name, overrides: ConfigOverrides = {}): Record<string, string> {
+  const snapshots: Record<string, string> = {};
+  for (const step of template.steps) {
+    snapshots[step.id] = loadPrompt(templateName, step.id, overrides);
+  }
+  return snapshots;
 }
 
 export interface ValidateTemplateOptions {
@@ -92,6 +106,7 @@ export interface ValidateTemplateOptions {
 export function validateTemplate(template: WorkflowTemplate, options: ValidateTemplateOptions = {}): void {
   if (!template || typeof template !== 'object') throw new Error('Template must be an object');
   if (!template.name) throw new Error('Template name is required');
+  assertTemplateName(template.name);
   if (!template.description) throw new Error(`Template ${template.name} description is required`);
   if (!Array.isArray(template.steps) || template.steps.length === 0) {
     throw new Error(`Template ${template.name} must define at least one step`);
@@ -117,9 +132,11 @@ export function validateTemplate(template: WorkflowTemplate, options: ValidateTe
         if (typeof prompt !== 'string' || !prompt.trim()) {
           throw new Error(`Template ${template.name} missing prompt content for step: ${step.id}`);
         }
+        assertPromptSize(prompt);
       } else {
-        const promptPath = join(templateDir(options.templateName ?? template.name, options.config), 'prompts', `${step.id}.md`);
+        const promptPath = safeJoin(templateDir(options.templateName ?? template.name, options.config), 'prompts', `${step.id}.md`);
         if (!existsSync(promptPath)) throw new Error(`Template ${template.name} missing prompt file for step: ${step.id}`);
+        assertPromptSize(readFileSync(promptPath, 'utf-8'));
       }
     }
   }
@@ -128,6 +145,7 @@ export function validateTemplate(template: WorkflowTemplate, options: ValidateTe
 function validateStepShape(templateName: string, step: WorkflowStep): void {
   if (!step || typeof step !== 'object') throw new Error(`Template ${templateName} has invalid step`);
   if (!step.id) throw new Error(`Template ${templateName} has a step without id`);
+  assertStepId(step.id);
   if (!step.name) throw new Error(`Template ${templateName} step ${step.id} has no name`);
   if (!Object.prototype.hasOwnProperty.call(step, 'next')) {
     throw new Error(`Template ${templateName} step ${step.id} must define next`);
@@ -176,11 +194,12 @@ export function createTemplate(options: CreateTemplateOptions, overrides: Config
     throw new Error(`Template already exists: ${options.name}`);
   }
 
-  mkdirSync(join(dir, 'prompts'), { recursive: true });
-  writeFileSync(join(dir, 'flow.yaml'), yaml.dump(template, { lineWidth: 120, noRefs: true }), 'utf-8');
+  const promptsDir = safeJoin(dir, 'prompts');
+  mkdirSync(promptsDir, { recursive: true });
+  writeFileSync(safeJoin(dir, 'flow.yaml'), yaml.dump(template, { lineWidth: 120, noRefs: true }), 'utf-8');
 
   for (const step of options.steps) {
-    writeFileSync(join(dir, 'prompts', `${step.id}.md`), options.prompts[step.id], 'utf-8');
+    writeFileSync(safeJoin(promptsDir, `${step.id}.md`), options.prompts[step.id], 'utf-8');
   }
 
   return { path: dir };

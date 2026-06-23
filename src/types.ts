@@ -67,14 +67,46 @@ export interface WorkflowInstance {
   current_step: string;
   created_at: string;
   updated_at: string;
+  version: number;
   steps: Record<string, StepInstance>;
   prompt_overrides: Record<string, string>;
+  template_snapshot: WorkflowTemplate;
+  prompt_snapshots: Record<string, string>;
   alias?: string;
   token_usage?: {
     total_consumed: number;
     per_step: Record<string, number>;
   };
 }
+
+export type WorkflowEventType =
+  | 'workflow.started'
+  | 'step.started'
+  | 'step.completed'
+  | 'step.validation_failed'
+  | 'workflow.completed'
+  | 'prompt.overridden'
+  | 'alias.bound'
+  | 'instance.conflict_detected';
+
+export interface WorkflowEvent {
+  id: string;
+  instance_id: string;
+  type: WorkflowEventType;
+  step_id?: string;
+  timestamp: string;
+  payload?: unknown;
+}
+
+export interface ToolErrorEnvelope {
+  code: string;
+  message: string;
+  details?: unknown;
+}
+
+export type ToolEnvelope<T = unknown> =
+  | { ok: true; data: T }
+  | { ok: false; error: ToolErrorEnvelope };
 
 export interface OflowConfig {
   homeDir: string;

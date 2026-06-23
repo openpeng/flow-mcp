@@ -1,5 +1,6 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { CreateTemplateOptions } from '../types.js';
+import type { CreateTemplateOptions, ToolEnvelope } from '../types.js';
+import { summarizeOutputs } from '../engine/limits.js';
 import {
   advanceWorkflow,
   bindWorkflowAlias,
@@ -65,7 +66,7 @@ export const workflowTools: Tool[] = [
   },
   {
     name: 'workflow_status',
-    description: 'Show full workflow instance status.',
+    description: 'Show full workflow instance status with output summaries.',
     inputSchema: {
       type: 'object',
       properties: { instance_id: { type: 'string', description: 'Instance ID or alias' } },
@@ -131,40 +132,38 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
   try {
     switch (name) {
       case 'workflow_list_templates':
-        return ok(formatJson({ templates: listTemplates() }));
+        return envelope({ templates: listTemplates() });
       case 'workflow_get_template': {
         const template = loadTemplate(requiredString(args, 'name'));
-        return ok(formatJson({
+        return envelope({
           name: template.name,
           description: template.description,
           params: template.params,
           steps: template.steps.map(step => ({ id: step.id, name: step.name, checkpoint: step.checkpoint, next: step.next })),
           token_budget: template.token_budget,
-        }));
+        });
       }
       case 'workflow_start': {
-        const result = startWorkflow(requiredString(args, 'template'), objectArg<Record<string, string>>(args, 'params'), optionalString(args, 'alias'));
-        return ok([
-          `✅ Workflow started`,
-          `- Instance: \`${result.instance.id}\``,
-          result.instance.alias ? `- Alias: \`${result.instance.alias}\`` : undefined,
-          `- Template: ${result.instance.template}`,
-          `- Current step: **${result.step.name}** (\`${result.step.id}\`)`,
-          '',
-          result.prompt,
-        ].filter(Boolean).join('\n'));
+        const result = startWorkflow(requiredString(args, 'template'), paramsArg(args, 'params'), optionalString(args, 'alias'));
+        return envelope({
+          instance_id: result.instance.id,
+          alias: result.instance.alias,
+          template: result.instance.template,
+          status: result.instance.status,
+          version: result.instance.version,
+          current_step: { id: result.step.id, name: result.step.name, checkpoint: result.step.checkpoint },
+          prompt: result.prompt,
+        });
       }
       case 'workflow_current': {
         const result = getCurrent(optionalString(args, 'instance_id'));
-        return ok([
-          `## Workflow current`,
-          `- Instance: \`${result.instance.id}\``,
-          `- Status: ${result.instance.status}`,
-          `- Current step: **${result.step.name}** (\`${result.step.id}\`)`,
-          result.step.checkpoint ? `- Checkpoint: ${JSON.stringify(result.step.checkpoint)}` : undefined,
-          '',
-          result.prompt,
-        ].filter(Boolean).join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          status: result.instance.status,
+          version: result.instance.version,
+          current_step: { id: result.step.id, name: result.step.name, checkpoint: result.step.checkpoint },
+          prompt: result.prompt,
+        });
       }
       case 'workflow_advance': {
         const result = advanceWorkflow(requiredString(args, 'instance_id'), objectArg<Record<string, unknown>>(args, 'outputs'), {
@@ -173,56 +172,83 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
           token_consumed: optionalNumber(args, 'token_consumed'),
         });
         if (result.completed) {
-          return ok(`✅ Workflow completed\n- Instance: \`${result.instance.id}\``);
+          return envelope({ instance_id: result.instance.id, status: result.instance.status, version: result.instance.version, completed: true });
         }
-        return ok([
-          `✅ Advanced to **${result.next_step?.name}** (\`${result.next_step?.id}\`)`,
-          `- Instance: \`${result.instance.id}\``,
-          '',
-          result.next_prompt,
-        ].filter(Boolean).join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          status: result.instance.status,
+          version: result.instance.version,
+          completed: false,
+          next_step: result.next_step ? { id: result.next_step.id, name: result.next_step.name, checkpoint: result.next_step.checkpoint } : undefined,
+          next_prompt: result.next_prompt,
+        });
       }
       case 'workflow_status': {
         const result = getWorkflowStatus(requiredString(args, 'instance_id'));
-        const lines = [`## Workflow status: ${result.instance.template}`, `Instance: \`${result.instance.id}\` | ${result.instance.status}`, ''];
-        for (const step of result.steps) {
-          const state = result.instance.steps[step.id];
-          const icon = state?.status === 'done' ? '✅' : state?.status === 'in_progress' ? '🔄' : '⬜';
-          lines.push(`${icon} **${step.name}** (\`${step.id}\`) — ${state?.status ?? 'pending'}`);
-          if (state?.outputs) lines.push(`   - outputs: ${JSON.stringify(state.outputs)}`);
-        }
-        return ok(lines.join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          template: result.instance.template,
+          status: result.instance.status,
+          version: result.instance.version,
+          steps: result.steps.map(step => {
+            const state = result.instance.steps[step.id];
+            return {
+              id: step.id,
+              name: step.name,
+              status: state?.status ?? 'pending',
+              started_at: state?.started_at,
+              completed_at: state?.completed_at,
+              confirmed_conditions: state?.confirmed_conditions,
+              outputs: summarizeOutputs(state?.outputs),
+            };
+          }),
+        });
       }
       case 'workflow_list_instances': {
         const result = listWorkflowInstances({ status: optionalStatus(args), template: optionalString(args, 'template') });
-        return ok(formatJson(result));
+        return envelope(result);
       }
       case 'workflow_bind': {
         const instance = bindWorkflowAlias(requiredString(args, 'instance_id'), requiredString(args, 'alias'));
-        return ok(`✅ Alias bound\n- Instance: \`${instance.id}\`\n- Alias: \`${instance.alias}\``);
+        return envelope({ instance_id: instance.id, alias: instance.alias, version: instance.version });
       }
       case 'workflow_override_prompt': {
         const instance = overridePrompt(requiredString(args, 'instance_id'), requiredString(args, 'step_id'), requiredString(args, 'prompt'));
-        return ok(`✅ Prompt override saved\n- Instance: \`${instance.id}\`\n- Step: \`${requiredString(args, 'step_id')}\``);
+        return envelope({ instance_id: instance.id, step_id: requiredString(args, 'step_id'), version: instance.version });
       }
       case 'workflow_create_template': {
         const path = createWorkflowTemplate(args as unknown as CreateTemplateOptions).path;
-        return ok(`✅ Template created\n- Path: ${path}`);
+        return envelope({ path });
       }
       default:
         return null;
     }
   } catch (err) {
-    return ok(`❌ ${err instanceof Error ? err.message : String(err)}`);
+    return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err));
   }
 }
 
-function ok(text: string) {
-  return { content: [{ type: 'text' as const, text }] };
+function envelope<T>(data: T) {
+  return text({ ok: true, data });
 }
 
-function formatJson(value: unknown): string {
-  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+function envelopeError(code: string, message: string, details?: unknown) {
+  return text({ ok: false, error: { code, message, ...(details !== undefined ? { details } : {}) } });
+}
+
+function text(value: ToolEnvelope) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+}
+
+function errorCode(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const prefix = message.match(/^([A-Z_]+):/);
+  if (prefix) return prefix[1];
+  if (message.includes('Checkpoint validation failed')) return 'CHECKPOINT_VALIDATION_FAILED';
+  if (message.includes('not found')) return 'NOT_FOUND';
+  if (message.includes('already')) return 'CONFLICT';
+  if (message.includes('Missing required')) return 'INVALID_ARGUMENT';
+  return 'INTERNAL_ERROR';
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -250,6 +276,16 @@ function objectArg<T extends object>(args: Record<string, unknown>, key: string)
   const value = args[key];
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Missing required object: ${key}`);
   return value as T;
+}
+
+function paramsArg(args: Record<string, unknown>, key: string): Record<string, string> {
+  const value = objectArg<Record<string, unknown>>(args, key);
+  const params: Record<string, string> = {};
+  for (const [paramKey, paramValue] of Object.entries(value)) {
+    if (typeof paramValue === 'object' && paramValue !== null) throw new Error(`Invalid parameter value: ${paramKey}`);
+    params[paramKey] = String(paramValue);
+  }
+  return params;
 }
 
 function optionalStatus(args: Record<string, unknown>): 'active' | 'completed' | 'all' | undefined {

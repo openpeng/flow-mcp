@@ -12,6 +12,12 @@ function tempConfig() {
 }
 
 function instance(id: string): WorkflowInstance {
+  const template = {
+    name: 'demo',
+    description: 'Demo template',
+    params: {},
+    steps: [{ id: 'one', name: 'One', next: null }],
+  };
   return {
     id,
     template: 'demo',
@@ -20,16 +26,19 @@ function instance(id: string): WorkflowInstance {
     current_step: 'one',
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
+    version: 1,
     steps: { one: { status: 'in_progress' } },
     prompt_overrides: {},
+    template_snapshot: template,
+    prompt_snapshots: { one: 'prompt' },
   };
 }
 
 test('save and load instance round trip', () => {
   const config = tempConfig();
   try {
-    saveInstance(instance('wf_one'), config);
-    assert.equal(loadInstance('wf_one', config).id, 'wf_one');
+    saveInstance(instance('wf_20260101000000_abc123'), config);
+    assert.equal(loadInstance('wf_20260101000000_abc123', config).id, 'wf_20260101000000_abc123');
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }
@@ -38,10 +47,10 @@ test('save and load instance round trip', () => {
 test('alias collision is rejected', () => {
   const config = tempConfig();
   try {
-    saveInstance(instance('wf_one'), config);
-    saveInstance(instance('wf_two'), config);
-    bindAlias('wf_one', 'demo', config);
-    assert.throws(() => bindAlias('wf_two', 'demo', config), /Alias already bound/);
+    saveInstance(instance('wf_20260101000000_abc123'), config);
+    saveInstance(instance('wf_20260101000001_def456'), config);
+    bindAlias('wf_20260101000000_abc123', 'demo', config);
+    assert.throws(() => bindAlias('wf_20260101000001_def456', 'demo', config), /Alias already bound/);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }
@@ -50,11 +59,36 @@ test('alias collision is rejected', () => {
 test('listInstances skips corrupted JSON with warning', () => {
   const config = tempConfig();
   try {
-    saveInstance(instance('wf_one'), config);
+    saveInstance(instance('wf_20260101000000_abc123'), config);
     writeFileSync(join(config.dataDir, 'broken.json'), '{bad json', 'utf-8');
     const result = listInstances({ status: 'all' }, config);
     assert.equal(result.instances.length, 1);
     assert.equal(result.warnings.length, 1);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('saveInstance rejects stale versions', () => {
+  const config = tempConfig();
+  try {
+    const saved = saveInstance(instance('wf_20260101000000_abc123'), config);
+    const stale = { ...saved, updated_at: '2026-01-01T00:01:00.000Z' };
+    const fresh = { ...saved, updated_at: '2026-01-01T00:02:00.000Z' };
+    saveInstance(fresh, config, { expectedVersion: saved.version });
+    assert.throws(() => saveInstance(stale, config, { expectedVersion: saved.version }), /INSTANCE_VERSION_CONFLICT/);
+    assert.equal(loadInstance(saved.id, config).updated_at, '2026-01-01T00:02:00.000Z');
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('instance id and alias path traversal inputs are rejected', () => {
+  const config = tempConfig();
+  try {
+    saveInstance(instance('wf_20260101000000_abc123'), config);
+    assert.throws(() => loadInstance('../../evil', config), /INVALID_INSTANCE_ID/);
+    assert.throws(() => bindAlias('wf_20260101000000_abc123', '../bad', config), /INVALID_ALIAS/);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }

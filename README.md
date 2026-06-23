@@ -152,6 +152,19 @@ Supported check expressions:
 
 Unsupported expressions fail closed and do not mutate workflow state.
 
+## Kernel hardening
+
+The workflow kernel includes the first P0/P1 hardening batch:
+
+- Template names, step ids, instance ids, and aliases are validated before file access.
+- Template, instance, and event paths are resolved inside their configured base directories to prevent path traversal.
+- Instances carry a `version` field and state writes use optimistic locking to reject stale saves.
+- Running instances store `template_snapshot` and `prompt_snapshots`, so later template edits do not change in-flight workflow semantics.
+- Key runtime transitions are appended to `events/<instance_id>.jsonl` for audit/debug.
+- Prompt, outputs, and instance payload sizes are bounded.
+- `workflow_status` returns output keys and short previews rather than full outputs by default.
+- Tool responses are JSON envelopes: `{ "ok": true, "data": ... }` or `{ "ok": false, "error": ... }`.
+
 ## Example lifecycle
 
 1. `workflow_list_templates`
