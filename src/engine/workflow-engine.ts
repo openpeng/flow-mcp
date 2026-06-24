@@ -1,6 +1,7 @@
 import type { ConfigOverrides } from '../config.js';
 import type {
   AdvanceOptions,
+  CheckpointValidationError,
   CreateTemplateOptions,
   ParamsDef,
   WorkflowAdvanceResult,
@@ -150,9 +151,12 @@ export function advanceWorkflow(
 
   const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? [], options.evidence ?? {}, options.approvals ?? {});
   if (!validation.ok) {
-    recordEvent('step.validation_failed', instance.id, { errors: validation.errors }, step.id, overrides);
+    const details = checkpointFailureDetails(validation.errors);
+    recordEvent('step.validation_failed', instance.id, { errors: validation.errors, details }, step.id, overrides);
     const message = validation.errors.map(error => `${error.message}${error.help ? ` (${error.help})` : ''}`).join('; ');
-    throw new Error(`Checkpoint validation failed: ${message}`);
+    const err = new Error(`Checkpoint validation failed: ${message}`);
+    (err as Error & { details?: unknown }).details = details;
+    throw err;
   }
 
   const expectedVersion = instance.version;
@@ -194,6 +198,24 @@ export function advanceWorkflow(
     instance: saved,
     next_step: nextStep,
     next_prompt: renderPrompt(nextPromptText, saved),
+  };
+}
+
+function checkpointFailureDetails(errors: CheckpointValidationError[]) {
+  const missingRequired = errors.filter(error => error.kind === 'required_output').map(error => error.field).filter((field): field is string => Boolean(field));
+  const missingEvidence = errors.filter(error => error.kind === 'evidence').map(error => error.field).filter((field): field is string => Boolean(field));
+  const missingApprovals = errors.filter(error => error.kind === 'approval').map(error => error.field).filter((field): field is string => Boolean(field));
+  return {
+    readiness: 'blocked',
+    missing_required: missingRequired,
+    missing_evidence: missingEvidence,
+    missing_approvals: missingApprovals,
+    suggestions: [
+      ...missingRequired.map(field => `Complete required output: ${field}`),
+      ...missingEvidence.map(field => `Attach required evidence: ${field}`),
+      ...missingApprovals.map(field => `Collect required approval: ${field}`),
+    ],
+    errors,
   };
 }
 

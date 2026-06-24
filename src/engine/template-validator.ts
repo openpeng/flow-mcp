@@ -1,4 +1,4 @@
-import type { ParamsDef, RequiredOutputDef, TemplateValidationResult, ValidationIssue, WorkflowStep, WorkflowTemplate } from '../types.js';
+import type { ParamsDef, ParamDef, RequiredOutputDef, TemplateValidationResult, ValidationIssue, WorkflowStep, WorkflowTemplate } from '../types.js';
 import { collectCheckExpressionOutputRefs, validateCheckExpressionSyntax } from './checkpoint-engine.js';
 import { normalizeParams } from './template-store.js';
 
@@ -8,16 +8,33 @@ export function validateTemplateControlPlane(template: WorkflowTemplate, prompts
   const stepIds = new Set(template.steps.map(step => step.id));
   const params = normalizeParams(template.params);
 
+  checkParamDefaults(params, warnings);
   checkUnreachable(template, errors);
+  checkUnusedPrompts(stepIds, prompts, warnings);
   for (const step of template.steps) {
     checkExpressions(step, errors);
+    checkEmptyConditions(step, errors);
+    checkBranchShape(step, warnings);
     checkDuplicateKeys(step, errors);
+    checkMissingDescriptions(step, warnings);
   }
   for (const [stepId, prompt] of Object.entries(prompts)) {
     checkPromptRefs(stepId, prompt, template, stepIds, params, errors, warnings);
   }
 
   return { valid: errors.length === 0, errors, warnings };
+}
+
+function issue(code: string, message: string, severity: 'error' | 'warning', step_id?: string, suggestion?: string): ValidationIssue {
+  return { code, message, severity, ...(step_id ? { step_id } : {}), ...(suggestion ? { suggestion } : {}) };
+}
+
+function checkParamDefaults(params: ParamsDef, warnings: ValidationIssue[]): void {
+  for (const [key, def] of Object.entries(params) as [string, ParamDef][]) {
+    if (def.required && def.default !== undefined) {
+      warnings.push(issue('PARAM_REQUIRED_WITH_DEFAULT', `Param ${key} is required but also has a default`, 'warning', undefined, 'Either remove required=true or remove the default to avoid ambiguity'));
+    }
+  }
 }
 
 function checkUnreachable(template: WorkflowTemplate, errors: ValidationIssue[]): void {
@@ -33,7 +50,7 @@ function checkUnreachable(template: WorkflowTemplate, errors: ValidationIssue[])
   const first = template.steps[0];
   if (first) visit(first.id);
   for (const step of template.steps) {
-    if (!reachable.has(step.id)) errors.push({ code: 'UNREACHABLE_STEP', message: `Step is unreachable: ${step.id}`, step_id: step.id });
+    if (!reachable.has(step.id)) errors.push(issue('UNREACHABLE_STEP', `Step is unreachable: ${step.id}`, 'error', step.id, 'Connect this step from next/branch or remove it'));
   }
 }
 
@@ -43,21 +60,53 @@ function nextSteps(step: WorkflowStep): string[] {
   return Object.values(step.next);
 }
 
+function checkUnusedPrompts(stepIds: Set<string>, prompts: Record<string, string>, warnings: ValidationIssue[]): void {
+  for (const stepId of Object.keys(prompts)) {
+    if (!stepIds.has(stepId)) warnings.push(issue('UNUSED_PROMPT', `Prompt is not used by any step: ${stepId}`, 'warning', stepId, 'Remove the prompt file or add a matching step'));
+  }
+}
+
 function checkExpressions(step: WorkflowStep, errors: ValidationIssue[]): void {
   for (const condition of step.checkpoint?.conditions ?? []) {
     if (typeof condition === 'string' || !condition.check) continue;
     const result = validateCheckExpressionSyntax(condition.check);
-    if (!result.ok) errors.push({ code: 'INVALID_CHECKPOINT_EXPRESSION', message: `Invalid checkpoint expression: ${condition.check}. ${result.error}`, step_id: step.id });
+    if (!result.ok) errors.push(issue('INVALID_CHECKPOINT_EXPRESSION', `Invalid checkpoint expression: ${condition.check}. ${result.error}`, 'error', step.id, 'Use the supported outputs.* expression subset'));
+  }
+}
+
+function checkEmptyConditions(step: WorkflowStep, errors: ValidationIssue[]): void {
+  for (const condition of step.checkpoint?.conditions ?? []) {
+    if (typeof condition !== 'string' && !condition.natural && !condition.check) {
+      errors.push(issue('EMPTY_CONDITION', 'Condition must define natural or check', 'error', step.id, 'Add a natural confirmation, deterministic check, or remove the condition'));
+    }
+  }
+}
+
+function checkBranchShape(step: WorkflowStep, warnings: ValidationIssue[]): void {
+  if (step.next && typeof step.next === 'object') {
+    const keys = Object.keys(step.next);
+    if (!keys.includes('pass') || !keys.includes('fail')) {
+      warnings.push(issue('BRANCH_MISSING_PASS_FAIL', `Branch next should usually include pass/fail keys: ${keys.join(', ')}`, 'warning', step.id, 'Use pass/fail branch keys unless a custom condition_result contract is documented'));
+    }
   }
 }
 
 function checkDuplicateKeys(step: WorkflowStep, errors: ValidationIssue[]): void {
   duplicateKeys(step.checkpoint?.evidence?.map(def => def.key) ?? []).forEach(key => {
-    errors.push({ code: 'DUPLICATE_EVIDENCE_KEY', message: `Duplicate evidence key: ${key}`, step_id: step.id });
+    errors.push(issue('DUPLICATE_EVIDENCE_KEY', `Duplicate evidence key: ${key}`, 'error', step.id, 'Use unique evidence keys'));
   });
   duplicateKeys(step.checkpoint?.approvals?.map(def => def.key) ?? []).forEach(key => {
-    errors.push({ code: 'DUPLICATE_APPROVAL_KEY', message: `Duplicate approval key: ${key}`, step_id: step.id });
+    errors.push(issue('DUPLICATE_APPROVAL_KEY', `Duplicate approval key: ${key}`, 'error', step.id, 'Use unique approval keys'));
   });
+}
+
+function checkMissingDescriptions(step: WorkflowStep, warnings: ValidationIssue[]): void {
+  for (const def of step.checkpoint?.evidence ?? []) {
+    if (!def.description) warnings.push(issue('EVIDENCE_DESCRIPTION_MISSING', `Evidence ${def.key} has no description`, 'warning', step.id, 'Add description so dashboard can explain what to attach'));
+  }
+  for (const def of step.checkpoint?.approvals ?? []) {
+    if (!def.description) warnings.push(issue('APPROVAL_DESCRIPTION_MISSING', `Approval ${def.key} has no description`, 'warning', step.id, 'Add description so dashboard can explain who/what should approve'));
+  }
 }
 
 function duplicateKeys(keys: string[]): string[] {
@@ -85,18 +134,18 @@ function checkPromptRefs(
       const refStep = parts[1];
       const outputKey = parts[3];
       if (!stepIds.has(refStep)) {
-        errors.push({ code: 'NONEXISTENT_STEP_REFERENCE', message: `Prompt references missing step: ${refStep}`, step_id: stepId });
+        errors.push(issue('NONEXISTENT_STEP_REFERENCE', `Prompt references missing step: ${refStep}`, 'error', stepId, 'Fix the step id or add the referenced step'));
       } else if (parts[2] === 'outputs' && outputKey) {
         const declared = declaredOutputs(template.steps.find(step => step.id === refStep)!);
         if (declared.size && !declared.has(outputKey)) {
-          warnings.push({ code: 'NONEXISTENT_STEP_OUTPUT_REFERENCE', message: `Prompt references undeclared output: ${refStep}.${outputKey}`, step_id: stepId });
+          warnings.push(issue('NONEXISTENT_STEP_OUTPUT_REFERENCE', `Prompt references undeclared output: ${refStep}.${outputKey}`, 'warning', stepId, 'Declare the output in required_outputs/optional_outputs or fix the prompt reference'));
         }
       }
       continue;
     }
     const param = ref.startsWith('params.') ? ref.slice('params.'.length) : ref;
     if (param && !param.includes('.') && !(param in params)) {
-      errors.push({ code: 'UNDECLARED_PARAM_REFERENCE', message: `Prompt references undeclared param: ${param}`, step_id: stepId });
+      errors.push(issue('UNDECLARED_PARAM_REFERENCE', `Prompt references undeclared param: ${param}`, 'error', stepId, 'Declare the param in flow.yaml or fix the prompt reference'));
     }
   }
 }

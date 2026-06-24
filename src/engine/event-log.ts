@@ -3,6 +3,7 @@ import { dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
 import type { WorkflowEvent, WorkflowEventType, WorkflowEventsQuery } from '../types.js';
+import { summarizeOutputs } from './limits.js';
 import { assertInstanceId, assertStepId, safeJoin } from './security.js';
 
 function eventsDir(overrides: ConfigOverrides = {}): string {
@@ -57,10 +58,39 @@ export function readEvents(instanceId: string, overrides: ConfigOverrides = {}):
 export function queryEvents(instanceId: string, query: WorkflowEventsQuery = {}, overrides: ConfigOverrides = {}): WorkflowEvent[] {
   if (query.step_id) assertStepId(query.step_id);
   const limit = normalizeLimit(query.limit);
+  const since = parseOptionalDate(query.since, 'since');
+  const until = parseOptionalDate(query.until, 'until');
   const events = readEvents(instanceId, overrides)
     .filter(event => !query.type || event.type === query.type)
-    .filter(event => !query.step_id || event.step_id === query.step_id);
-  return events.slice(-limit);
+    .filter(event => !query.only_failures || event.type === 'step.validation_failed')
+    .filter(event => !query.step_id || event.step_id === query.step_id)
+    .filter(event => !since || new Date(event.timestamp).getTime() >= since)
+    .filter(event => !until || new Date(event.timestamp).getTime() <= until);
+  return events.slice(-limit).map(event => summarizeEvent(event, query));
+}
+
+function summarizeEvent(event: WorkflowEvent, query: WorkflowEventsQuery): WorkflowEvent {
+  if (query.include_payload) return event;
+  if (!event.payload) return event;
+  if (!query.summary) return { ...event, payload: undefined };
+  return { ...event, payload: summarizePayload(event.payload) };
+}
+
+function summarizePayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== 'object') return payload;
+  const record = payload as Record<string, unknown>;
+  if ('outputs' in record && record.outputs && typeof record.outputs === 'object') {
+    return { ...record, outputs: summarizeOutputs(record.outputs as Record<string, unknown>) };
+  }
+  if ('errors' in record) return { errors: record.errors };
+  return { keys: Object.keys(record) };
+}
+
+function parseOptionalDate(value: string | undefined, key: string): number | undefined {
+  if (!value) return undefined;
+  const time = new Date(value).getTime();
+  if (!Number.isFinite(time)) throw new Error(`INVALID_ARGUMENT: ${key} must be an ISO timestamp`);
+  return time;
 }
 
 function normalizeLimit(limit: number | undefined): number {

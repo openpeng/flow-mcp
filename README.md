@@ -176,10 +176,20 @@ Unsupported expressions fail closed and do not mutate workflow state.
 `workflow_events` accepts:
 
 ```json
-{ "instance_id": "wf_...", "type": "step.completed", "step_id": "verify", "limit": 50 }
+{
+  "instance_id": "wf_...",
+  "type": "step.completed",
+  "step_id": "verify",
+  "since": "2026-06-23T00:00:00.000Z",
+  "until": "2026-06-24T00:00:00.000Z",
+  "only_failures": false,
+  "include_payload": false,
+  "summary": true,
+  "limit": 50
+}
 ```
 
-`limit` defaults to 50 and is capped at 200. Malformed JSONL audit lines are skipped so one bad event does not hide the rest.
+`limit` defaults to 50 and is capped at 200. Malformed JSONL audit lines are skipped so one bad event does not hide the rest. Payloads are omitted by default; use `summary=true` for safe payload summaries or `include_payload=true` for full payloads.
 
 `workflow_dashboard` accepts:
 
@@ -188,17 +198,18 @@ Unsupported expressions fail closed and do not mutate workflow state.
   "instance_id": "wf_...",
   "include_prompt": true,
   "include_recent_events": true,
-  "include_inbox": true
+  "include_inbox": true,
+  "verbose": false
 }
 ```
 
-The dashboard reports checkpoint blockers and suggested actions. It summarizes outputs with keys and short previews rather than returning full output payloads.
+The dashboard reports `progress`, `risk`, checkpoint `readiness`, and structured `suggested_actions` with `action_type`, `title`, `reason`, `tool_hint`, and `risk`. It summarizes outputs with keys and short previews rather than returning full output payloads.
 
-`workflow_worklog` returns `{ "markdown": "...", "summary": { ... } }` and does not write files. The generated Markdown includes step timeline, output summaries, validation failures, and current state.
+`workflow_worklog` returns `{ "markdown": "...", "summary": { ... } }`. It supports `mode: "summary" | "full" | "handoff" | "release_note"` and optional `write_file`; when writing, paths are resolved under `OFLOW_MCP_DATA_DIR`. The generated Markdown includes step timeline, output summaries, validation failures, and current state.
 
-`workflow_inbox_save/list/mark` stores local coordination items under `OFLOW_MCP_DATA_DIR/inbox/<instance_id>.json`. Deduplication uses `external_id` first; otherwise it uses `source + type + title + date`. These tools do not call Git, CI, TAPD, IM, or review systems.
+`workflow_inbox_save/list/mark` stores local coordination items under `OFLOW_MCP_DATA_DIR/inbox/<instance_id>.json`. Entries support `priority: "low" | "medium" | "high" | "blocking"` and optional `step_id`; dashboard risk aggregates high/blocking items. Deduplication uses `external_id` first; otherwise it uses `source + type + title + date`. These tools do not call Git, CI, TAPD, IM, or review systems.
 
-`workflow_validate_template` returns `{ "valid": boolean, "errors": [], "warnings": [] }` for control-plane health checks including unreachable steps, invalid checkpoint expressions, undeclared prompt params, missing step references, and duplicate evidence/approval keys.
+`workflow_validate_template` returns `{ "valid": boolean, "errors": [], "warnings": [] }` for control-plane health checks including unreachable steps, invalid checkpoint expressions, undeclared prompt params, missing step references, duplicate evidence/approval keys, empty conditions, unused prompts, branch shape warnings, and missing descriptions. Issues include `severity` and `suggestion` when available.
 
 ## Kernel hardening
 
@@ -244,6 +255,6 @@ npm test
 
 - **Template not found**: set `OFLOW_MCP_FLOWS_DIR` or copy templates to `~/.oflow-mcp/flows`.
 - **Prompt not found**: every step requires `prompts/<step_id>.md`.
-- **Checkpoint validation failed**: provide required outputs, confirmed conditions, and any required evidence/approvals.
+- **Checkpoint validation failed**: provide required outputs, confirmed conditions, and any required evidence/approvals. The error envelope may include `details.missing_required`, `details.missing_evidence`, `details.missing_approvals`, and `details.suggestions`.
 - **No branch matched**: pass a `condition_result` matching the branch keys in `next`.
 - **Alias already bound**: choose another alias or use the existing instance ID.

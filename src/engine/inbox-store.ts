@@ -2,8 +2,8 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { dirname } from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import { getConfig, type ConfigOverrides } from '../config.js';
-import type { InboxEntry, InboxStatus, InboxSummary } from '../types.js';
-import { assertInstanceId, safeJoin } from './security.js';
+import type { InboxEntry, InboxPriority, InboxStatus, InboxSummary } from '../types.js';
+import { assertInstanceId, assertStepId, safeJoin } from './security.js';
 
 export interface InboxEntryInput {
   source: InboxEntry['source'];
@@ -12,6 +12,8 @@ export interface InboxEntryInput {
   summary: string;
   action_required?: boolean;
   timestamp?: string;
+  priority?: InboxPriority;
+  step_id?: string;
   external_id?: string;
   url?: string;
 }
@@ -19,6 +21,8 @@ export interface InboxEntryInput {
 export interface InboxListFilter {
   status?: InboxStatus;
   action_required?: boolean;
+  priority?: InboxPriority;
+  step_id?: string;
   limit?: number;
 }
 
@@ -45,12 +49,13 @@ export function saveInboxEntries(instanceId: string, entries: InboxEntryInput[],
   const saved: InboxEntry[] = [];
 
   for (const input of entries) {
+    validateInput(input);
     const timestamp = input.timestamp ?? new Date().toISOString();
     const { key, strategy } = dedup(input, timestamp);
     const duplicate = existing.find(entry => entry.dedup_key === key);
     if (duplicate) {
       duplicateCount++;
-      saved.push(duplicate);
+      saved.push(normalizeEntry(duplicate));
       continue;
     }
     const entry: InboxEntry = {
@@ -63,6 +68,8 @@ export function saveInboxEntries(instanceId: string, entries: InboxEntryInput[],
       action_required: input.action_required ?? false,
       status: 'new',
       timestamp,
+      priority: input.priority ?? 'medium',
+      ...(input.step_id ? { step_id: input.step_id } : {}),
       ...(input.external_id ? { external_id: input.external_id } : {}),
       ...(input.url ? { url: input.url } : {}),
       dedup_key: key,
@@ -73,21 +80,25 @@ export function saveInboxEntries(instanceId: string, entries: InboxEntryInput[],
     savedCount++;
   }
 
-  writeInbox(instanceId, existing, overrides);
+  writeInbox(instanceId, existing.map(normalizeEntry), overrides);
   return { saved_count: savedCount, duplicate_count: duplicateCount, entries: saved };
 }
 
 export function listInboxEntries(instanceId: string, filter: InboxListFilter = {}, overrides: ConfigOverrides = {}): InboxEntry[] {
+  if (filter.step_id) assertStepId(filter.step_id);
   let entries = readInbox(instanceId, overrides)
+    .map(normalizeEntry)
     .filter(entry => !filter.status || entry.status === filter.status)
     .filter(entry => filter.action_required === undefined || entry.action_required === filter.action_required)
+    .filter(entry => !filter.priority || entry.priority === filter.priority)
+    .filter(entry => !filter.step_id || entry.step_id === filter.step_id)
     .sort((a, b) => b.timestamp.localeCompare(a.timestamp));
   if (filter.limit !== undefined) entries = entries.slice(0, normalizeLimit(filter.limit));
   return entries;
 }
 
 export function markInboxEntries(instanceId: string, ids: string[], status: InboxStatus, overrides: ConfigOverrides = {}): { updated_count: number; entries: InboxEntry[] } {
-  const entries = readInbox(instanceId, overrides);
+  const entries = readInbox(instanceId, overrides).map(normalizeEntry);
   const idSet = new Set(ids);
   let updated = 0;
   for (const entry of entries) {
@@ -101,14 +112,21 @@ export function markInboxEntries(instanceId: string, ids: string[], status: Inbo
 }
 
 export function summarizeInbox(instanceId: string, overrides: ConfigOverrides = {}): InboxSummary {
-  const entries = readInbox(instanceId, overrides);
+  const entries = readInbox(instanceId, overrides).map(normalizeEntry);
   const byStatus: Record<InboxStatus, number> = { new: 0, seen: 0, acted: 0 };
-  for (const entry of entries) byStatus[entry.status]++;
+  const byPriority: Record<InboxPriority, number> = { low: 0, medium: 0, high: 0, blocking: 0 };
+  for (const entry of entries) {
+    byStatus[entry.status]++;
+    byPriority[entry.priority ?? 'medium']++;
+  }
   return {
     total: entries.length,
     unread: byStatus.new,
     action_required: entries.filter(entry => entry.action_required && entry.status !== 'acted').length,
+    blocking: entries.filter(entry => entry.priority === 'blocking' && entry.status !== 'acted').length,
+    high: entries.filter(entry => entry.priority === 'high' && entry.status !== 'acted').length,
     by_status: byStatus,
+    by_priority: byPriority,
     latest_timestamp: entries.map(entry => entry.timestamp).sort().at(-1),
   };
 }
@@ -126,6 +144,15 @@ function writeInbox(instanceId: string, entries: InboxEntry[], overrides: Config
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(entries, null, 2), 'utf-8');
   renameSync(tmp, path);
+}
+
+function validateInput(input: InboxEntryInput): void {
+  if (!input.title.trim()) throw new Error('INVALID_ARGUMENT: inbox title must not be empty');
+  if (input.step_id) assertStepId(input.step_id);
+}
+
+function normalizeEntry(entry: InboxEntry): InboxEntry {
+  return { ...entry, priority: entry.priority ?? 'medium' };
 }
 
 function dedup(input: InboxEntryInput, timestamp: string): { key: string; strategy: InboxEntry['dedup_strategy'] } {
