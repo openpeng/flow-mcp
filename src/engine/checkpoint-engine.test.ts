@@ -37,3 +37,35 @@ test('evaluateCheckExpression fails closed for unsupported expressions', () => {
   const result = evaluateCheckExpression('process.exit()', {});
   assert.equal(result.ok, false);
 });
+
+test('validateCheckpoint requires evidence and approvals when declared', () => {
+  const evidenceStep: WorkflowStep = {
+    id: 'verify',
+    name: 'Verify',
+    checkpoint: {
+      required_outputs: ['summary'],
+      optional_outputs: { risk_notes: { type: 'string' } },
+      evidence: [{ key: 'test_log', required: true, description: 'Test log' }],
+      approvals: [{ key: 'user_confirmed', required: true, description: 'User confirmed' }],
+    },
+    next: null,
+  };
+
+  const missing = validateCheckpoint(evidenceStep, { summary: 'hello' }, [], {}, {});
+  assert.equal(missing.ok, false);
+  assert.equal(missing.errors.some(error => error.kind === 'evidence' && error.field === 'test_log'), true);
+  assert.equal(missing.errors.some(error => error.kind === 'approval' && error.field === 'user_confirmed'), true);
+
+  const passed = validateCheckpoint(evidenceStep, { summary: 'hello' }, [], { test_log: 'npm test passed' }, { user_confirmed: true });
+  assert.equal(passed.ok, true);
+});
+
+test('validateCheckpoint does not block on missing optional outputs', () => {
+  const optionalStep: WorkflowStep = {
+    id: 'optional',
+    name: 'Optional',
+    checkpoint: { required_outputs: ['summary'], optional_outputs: { risk_notes: { type: 'string' } } },
+    next: null,
+  };
+  assert.equal(validateCheckpoint(optionalStep, { summary: 'hello' }).ok, true);
+});

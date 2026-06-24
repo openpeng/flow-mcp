@@ -78,8 +78,15 @@ MCP configuration example:
 | `workflow_bind` | Bind alias to an instance |
 | `workflow_override_prompt` | Override one step prompt for one instance |
 | `workflow_create_template` | Create a template from YAML-like data and prompts |
+| `workflow_events` | Query append-only event log by instance/type/step/limit |
+| `workflow_dashboard` | Show Agent control-plane state, checkpoint blockers, inbox summary, and suggested actions |
+| `workflow_worklog` | Generate a Markdown worklog from instance state and events |
+| `workflow_inbox_save` | Save lightweight inbox entries for an instance |
+| `workflow_inbox_list` | List lightweight inbox entries |
+| `workflow_inbox_mark` | Mark inbox entries as `new`, `seen`, or `acted` |
+| `workflow_validate_template` | Report template health issues such as unreachable steps and invalid prompt references |
 
-No `flow_memory_*`, `flow_inbox_*`, `flow_init`, TAPD, or Confluence tools are exposed.
+No `flow_memory_*`, `flow_init`, TAPD, or Confluence tools are exposed. `workflow_inbox_*` is a local lightweight inbox for workflow control-plane coordination; it does not call external systems.
 
 ## Template structure
 
@@ -110,6 +117,17 @@ steps:
         analysis_summary:
           type: string
           min_length: 20
+      optional_outputs:
+        risk_notes:
+          type: string
+      evidence:
+        - key: test_log
+          required: true
+          description: Test log or command output
+      approvals:
+        - key: user_confirmed
+          required: false
+          description: User approval when needed
       conditions:
         - natural: analysis_summary has been produced
           check: outputs.analysis_summary != null AND len(outputs.analysis_summary) > 20
@@ -139,8 +157,9 @@ Prompt variables:
 | `token_budget.total` and `token_consumed` | Supported |
 | loops | Not supported in first release |
 | optimization hints | Not supported |
-| worklog hooks | Not supported |
-| inbox/memory/external bindings | Not supported |
+| worklog generation | Supported through `workflow_worklog` |
+| local inbox | Supported through `workflow_inbox_*`; no external sync |
+| memory/external bindings | Not supported |
 
 Supported check expressions:
 
@@ -151,6 +170,59 @@ Supported check expressions:
 - `AND`, `OR`, parentheses
 
 Unsupported expressions fail closed and do not mutate workflow state.
+
+## Control plane tools
+
+`workflow_events` accepts:
+
+```json
+{
+  "instance_id": "wf_...",
+  "type": "step.completed",
+  "step_id": "verify",
+  "since": "2026-06-23T00:00:00.000Z",
+  "until": "2026-06-24T00:00:00.000Z",
+  "only_failures": false,
+  "include_payload": false,
+  "summary": true,
+  "limit": 50
+}
+```
+
+`limit` defaults to 50 and is capped at 200. Malformed JSONL audit lines are skipped so one bad event does not hide the rest. Payloads are omitted by default; use `summary=true` for safe payload summaries or `include_payload=true` for full payloads.
+
+`workflow_dashboard` accepts:
+
+```json
+{
+  "instance_id": "wf_...",
+  "include_prompt": true,
+  "include_recent_events": true,
+  "include_inbox": true,
+  "verbose": false
+}
+```
+
+The dashboard reports `progress`, `risk`, checkpoint `readiness`, and structured `suggested_actions` with `action_type`, `title`, `reason`, `tool_hint`, and `risk`. It summarizes outputs with keys and short previews rather than returning full output payloads.
+
+`workflow_worklog` returns `{ "markdown": "...", "summary": { ... } }`. It supports `mode: "summary" | "full" | "handoff" | "release_note"` and optional `write_file`; when writing, paths are resolved under `OFLOW_MCP_DATA_DIR`. The generated Markdown includes step timeline, output summaries, validation failures, and current state.
+
+`workflow_inbox_save/list/mark` stores local coordination items under `OFLOW_MCP_DATA_DIR/inbox/<instance_id>.json`. Entries support `priority: "low" | "medium" | "high" | "blocking"` and optional `step_id`; dashboard risk aggregates high/blocking items. Deduplication uses `external_id` first; otherwise it uses `source + type + title + date`. These tools do not call Git, CI, TAPD, IM, or review systems.
+
+`workflow_validate_template` returns `{ "valid": boolean, "errors": [], "warnings": [] }` for control-plane health checks including unreachable steps, invalid checkpoint expressions, undeclared prompt params, missing step references, duplicate evidence/approval keys, empty conditions, unused prompts, branch shape warnings, and missing descriptions. Issues include `severity` and `suggestion` when available.
+
+## Kernel hardening
+
+The workflow kernel includes the first P0/P1 hardening batch:
+
+- Template names, step ids, instance ids, and aliases are validated before file access.
+- Template, instance, and event paths are resolved inside their configured base directories to prevent path traversal.
+- Instances carry a `version` field and state writes use optimistic locking to reject stale saves.
+- Running instances store `template_snapshot` and `prompt_snapshots`, so later template edits do not change in-flight workflow semantics.
+- Key runtime transitions are appended to `events/<instance_id>.jsonl` for audit/debug.
+- Prompt, outputs, and instance payload sizes are bounded.
+- `workflow_status` returns output keys and short previews rather than full outputs by default.
+- Tool responses are JSON envelopes: `{ "ok": true, "data": ... }` or `{ "ok": false, "error": ... }`.
 
 ## Example lifecycle
 
@@ -166,9 +238,10 @@ Unsupported expressions fail closed and do not mutate workflow state.
 ```
 
 3. `workflow_current` with `demo-run`
-4. `workflow_advance` with required outputs and confirmed conditions
-5. `workflow_status`
-6. Continue `workflow_advance` until completed
+4. `workflow_dashboard` to inspect blockers and suggested actions
+5. `workflow_advance` with required outputs, confirmed conditions, and any required evidence/approvals
+6. `workflow_events` or `workflow_worklog` for audit/debug
+7. Continue `workflow_advance` until completed
 
 ## Development
 
@@ -182,6 +255,6 @@ npm test
 
 - **Template not found**: set `OFLOW_MCP_FLOWS_DIR` or copy templates to `~/.oflow-mcp/flows`.
 - **Prompt not found**: every step requires `prompts/<step_id>.md`.
-- **Checkpoint validation failed**: provide required outputs and confirmed conditions.
+- **Checkpoint validation failed**: provide required outputs, confirmed conditions, and any required evidence/approvals. The error envelope may include `details.missing_required`, `details.missing_evidence`, `details.missing_approvals`, and `details.suggestions`.
 - **No branch matched**: pass a `condition_result` matching the branch keys in `next`.
 - **Alias already bound**: choose another alias or use the existing instance ID.

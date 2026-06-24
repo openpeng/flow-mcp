@@ -1,5 +1,12 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { CreateTemplateOptions } from '../types.js';
+import type { CreateTemplateOptions, InboxPriority, InboxStatus, ToolEnvelope, WorkflowEventType, WorklogMode } from '../types.js';
+import { summarizeOutputs } from '../engine/limits.js';
+import { queryEvents } from '../engine/event-log.js';
+import { buildDashboard } from '../engine/dashboard-engine.js';
+import { saveInboxEntries, listInboxEntries, markInboxEntries } from '../engine/inbox-store.js';
+import { buildWorklog } from '../engine/worklog-engine.js';
+import { loadPromptSnapshots, listTemplates, loadTemplate } from '../engine/template-store.js';
+import { validateTemplateControlPlane } from '../engine/template-validator.js';
 import {
   advanceWorkflow,
   bindWorkflowAlias,
@@ -10,7 +17,6 @@ import {
   overridePrompt,
   startWorkflow,
 } from '../engine/workflow-engine.js';
-import { listTemplates, loadTemplate } from '../engine/template-store.js';
 
 export const workflowTools: Tool[] = [
   {
@@ -59,13 +65,15 @@ export const workflowTools: Tool[] = [
         confirmed_conditions: { type: 'array', items: { type: 'string' }, description: 'Confirmed natural-language checkpoint conditions' },
         condition_result: { type: 'string', description: 'Branch key for conditional next routing' },
         token_consumed: { type: 'number', description: 'Tokens consumed by this step' },
+        evidence: { type: 'object', description: 'Checkpoint evidence keyed by evidence key', additionalProperties: true },
+        approvals: { type: 'object', description: 'Checkpoint approvals keyed by approval key', additionalProperties: true },
       },
       required: ['instance_id', 'outputs'],
     },
   },
   {
     name: 'workflow_status',
-    description: 'Show full workflow instance status.',
+    description: 'Show full workflow instance status with output summaries.',
     inputSchema: {
       type: 'object',
       properties: { instance_id: { type: 'string', description: 'Instance ID or alias' } },
@@ -125,104 +133,286 @@ export const workflowTools: Tool[] = [
       required: ['name', 'description', 'params', 'steps', 'prompts'],
     },
   },
+  {
+    name: 'workflow_events',
+    description: 'Query workflow event log by instance, type, step, and limit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID' },
+        type: { type: 'string', description: 'Optional event type filter' },
+        step_id: { type: 'string', description: 'Optional step ID filter' },
+        limit: { type: 'number', description: 'Max events, default 50, max 200' },
+        since: { type: 'string', description: 'Only events at or after this ISO timestamp' },
+        until: { type: 'string', description: 'Only events at or before this ISO timestamp' },
+        only_failures: { type: 'boolean', description: 'Only validation failure events' },
+        include_payload: { type: 'boolean', description: 'Include full event payload' },
+        summary: { type: 'boolean', description: 'Return summarized payloads when include_payload is false' },
+      },
+      required: ['instance_id'],
+    },
+  },
+  {
+    name: 'workflow_dashboard',
+    description: 'Build an agent dashboard for workflow state, checkpoint blockers, recent events, inbox, and suggested actions.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias. If omitted, uses most recent active instance.' },
+        include_prompt: { type: 'boolean', description: 'Include rendered prompt' },
+        include_recent_events: { type: 'boolean', description: 'Include recent events' },
+        include_inbox: { type: 'boolean', description: 'Include inbox summary and recent entries' },
+        event_limit: { type: 'number', description: 'Recent event limit' },
+        inbox_limit: { type: 'number', description: 'Recent inbox entry limit' },
+        verbose: { type: 'boolean', description: 'Include detailed checkpoint and inbox entries' },
+      },
+    },
+  },
+  {
+    name: 'workflow_worklog',
+    description: 'Generate a Markdown worklog from instance state and events.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias' },
+        mode: { type: 'string', enum: ['summary', 'full', 'handoff', 'release_note'], description: 'Worklog rendering mode' },
+        write_file: { type: 'boolean', description: 'Write markdown to disk' },
+        path: { type: 'string', description: 'Optional path under dataDir when write_file=true' },
+      },
+      required: ['instance_id'],
+    },
+  },
+  {
+    name: 'workflow_inbox_save',
+    description: 'Save lightweight inbox entries for a workflow instance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID' },
+        entries: { type: 'array', description: 'Inbox entries to save; supports priority and step_id', items: { type: 'object' } },
+      },
+      required: ['instance_id', 'entries'],
+    },
+  },
+  {
+    name: 'workflow_inbox_list',
+    description: 'List lightweight inbox entries for a workflow instance.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID' },
+        status: { type: 'string', enum: ['new', 'seen', 'acted'] },
+        action_required: { type: 'boolean' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high', 'blocking'] },
+        step_id: { type: 'string' },
+        limit: { type: 'number' },
+      },
+      required: ['instance_id'],
+    },
+  },
+  {
+    name: 'workflow_inbox_mark',
+    description: 'Mark inbox entries as seen or acted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID' },
+        entry_ids: { type: 'array', items: { type: 'string' } },
+        status: { type: 'string', enum: ['new', 'seen', 'acted'] },
+      },
+      required: ['instance_id', 'entry_ids', 'status'],
+    },
+  },
+  {
+    name: 'workflow_validate_template',
+    description: 'Validate a template for control-plane health issues.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'Template name' } },
+      required: ['name'],
+    },
+  },
 ];
 
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
   try {
     switch (name) {
       case 'workflow_list_templates':
-        return ok(formatJson({ templates: listTemplates() }));
+        return envelope({ templates: listTemplates() });
       case 'workflow_get_template': {
         const template = loadTemplate(requiredString(args, 'name'));
-        return ok(formatJson({
+        return envelope({
           name: template.name,
           description: template.description,
           params: template.params,
           steps: template.steps.map(step => ({ id: step.id, name: step.name, checkpoint: step.checkpoint, next: step.next })),
           token_budget: template.token_budget,
-        }));
+        });
       }
       case 'workflow_start': {
-        const result = startWorkflow(requiredString(args, 'template'), objectArg<Record<string, string>>(args, 'params'), optionalString(args, 'alias'));
-        return ok([
-          `✅ Workflow started`,
-          `- Instance: \`${result.instance.id}\``,
-          result.instance.alias ? `- Alias: \`${result.instance.alias}\`` : undefined,
-          `- Template: ${result.instance.template}`,
-          `- Current step: **${result.step.name}** (\`${result.step.id}\`)`,
-          '',
-          result.prompt,
-        ].filter(Boolean).join('\n'));
+        const result = startWorkflow(requiredString(args, 'template'), paramsArg(args, 'params'), optionalString(args, 'alias'));
+        return envelope({
+          instance_id: result.instance.id,
+          alias: result.instance.alias,
+          template: result.instance.template,
+          status: result.instance.status,
+          version: result.instance.version,
+          current_step: { id: result.step.id, name: result.step.name, checkpoint: result.step.checkpoint },
+          prompt: result.prompt,
+        });
       }
       case 'workflow_current': {
         const result = getCurrent(optionalString(args, 'instance_id'));
-        return ok([
-          `## Workflow current`,
-          `- Instance: \`${result.instance.id}\``,
-          `- Status: ${result.instance.status}`,
-          `- Current step: **${result.step.name}** (\`${result.step.id}\`)`,
-          result.step.checkpoint ? `- Checkpoint: ${JSON.stringify(result.step.checkpoint)}` : undefined,
-          '',
-          result.prompt,
-        ].filter(Boolean).join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          status: result.instance.status,
+          version: result.instance.version,
+          current_step: { id: result.step.id, name: result.step.name, checkpoint: result.step.checkpoint },
+          prompt: result.prompt,
+        });
       }
       case 'workflow_advance': {
         const result = advanceWorkflow(requiredString(args, 'instance_id'), objectArg<Record<string, unknown>>(args, 'outputs'), {
           confirmed_conditions: optionalStringArray(args, 'confirmed_conditions'),
           condition_result: optionalString(args, 'condition_result'),
           token_consumed: optionalNumber(args, 'token_consumed'),
+          evidence: optionalObject<Record<string, unknown>>(args, 'evidence'),
+          approvals: optionalObject<Record<string, unknown>>(args, 'approvals'),
         });
         if (result.completed) {
-          return ok(`✅ Workflow completed\n- Instance: \`${result.instance.id}\``);
+          return envelope({ instance_id: result.instance.id, status: result.instance.status, version: result.instance.version, completed: true });
         }
-        return ok([
-          `✅ Advanced to **${result.next_step?.name}** (\`${result.next_step?.id}\`)`,
-          `- Instance: \`${result.instance.id}\``,
-          '',
-          result.next_prompt,
-        ].filter(Boolean).join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          status: result.instance.status,
+          version: result.instance.version,
+          completed: false,
+          next_step: result.next_step ? { id: result.next_step.id, name: result.next_step.name, checkpoint: result.next_step.checkpoint } : undefined,
+          next_prompt: result.next_prompt,
+        });
       }
       case 'workflow_status': {
         const result = getWorkflowStatus(requiredString(args, 'instance_id'));
-        const lines = [`## Workflow status: ${result.instance.template}`, `Instance: \`${result.instance.id}\` | ${result.instance.status}`, ''];
-        for (const step of result.steps) {
-          const state = result.instance.steps[step.id];
-          const icon = state?.status === 'done' ? '✅' : state?.status === 'in_progress' ? '🔄' : '⬜';
-          lines.push(`${icon} **${step.name}** (\`${step.id}\`) — ${state?.status ?? 'pending'}`);
-          if (state?.outputs) lines.push(`   - outputs: ${JSON.stringify(state.outputs)}`);
-        }
-        return ok(lines.join('\n'));
+        return envelope({
+          instance_id: result.instance.id,
+          template: result.instance.template,
+          status: result.instance.status,
+          version: result.instance.version,
+          steps: result.steps.map(step => {
+            const state = result.instance.steps[step.id];
+            return {
+              id: step.id,
+              name: step.name,
+              status: state?.status ?? 'pending',
+              started_at: state?.started_at,
+              completed_at: state?.completed_at,
+              confirmed_conditions: state?.confirmed_conditions,
+              outputs: summarizeOutputs(state?.outputs),
+            };
+          }),
+        });
       }
       case 'workflow_list_instances': {
         const result = listWorkflowInstances({ status: optionalStatus(args), template: optionalString(args, 'template') });
-        return ok(formatJson(result));
+        return envelope(result);
       }
       case 'workflow_bind': {
         const instance = bindWorkflowAlias(requiredString(args, 'instance_id'), requiredString(args, 'alias'));
-        return ok(`✅ Alias bound\n- Instance: \`${instance.id}\`\n- Alias: \`${instance.alias}\``);
+        return envelope({ instance_id: instance.id, alias: instance.alias, version: instance.version });
       }
       case 'workflow_override_prompt': {
         const instance = overridePrompt(requiredString(args, 'instance_id'), requiredString(args, 'step_id'), requiredString(args, 'prompt'));
-        return ok(`✅ Prompt override saved\n- Instance: \`${instance.id}\`\n- Step: \`${requiredString(args, 'step_id')}\``);
+        return envelope({ instance_id: instance.id, step_id: requiredString(args, 'step_id'), version: instance.version });
       }
       case 'workflow_create_template': {
         const path = createWorkflowTemplate(args as unknown as CreateTemplateOptions).path;
-        return ok(`✅ Template created\n- Path: ${path}`);
+        return envelope({ path });
+      }
+      case 'workflow_events': {
+        return envelope({
+          events: queryEvents(requiredString(args, 'instance_id'), {
+            type: optionalString(args, 'type') as WorkflowEventType | undefined,
+            step_id: optionalString(args, 'step_id'),
+            limit: optionalNumber(args, 'limit'),
+            since: optionalString(args, 'since'),
+            until: optionalString(args, 'until'),
+            only_failures: optionalBoolean(args, 'only_failures'),
+            include_payload: optionalBoolean(args, 'include_payload'),
+            summary: optionalBoolean(args, 'summary'),
+          }),
+        });
+      }
+      case 'workflow_dashboard': {
+        return envelope(buildDashboard(optionalString(args, 'instance_id'), {
+          include_prompt: optionalBoolean(args, 'include_prompt'),
+          include_recent_events: optionalBoolean(args, 'include_recent_events'),
+          include_inbox: optionalBoolean(args, 'include_inbox'),
+          event_limit: optionalNumber(args, 'event_limit'),
+          inbox_limit: optionalNumber(args, 'inbox_limit'),
+          verbose: optionalBoolean(args, 'verbose'),
+        }));
+      }
+      case 'workflow_worklog': {
+        return envelope(buildWorklog(requiredString(args, 'instance_id'), {
+          mode: optionalWorklogMode(args),
+          write_file: optionalBoolean(args, 'write_file'),
+          path: optionalString(args, 'path'),
+        }));
+      }
+      case 'workflow_inbox_save': {
+        return envelope(saveInboxEntries(requiredString(args, 'instance_id'), arrayArg(args, 'entries')));
+      }
+      case 'workflow_inbox_list': {
+        return envelope({ entries: listInboxEntries(requiredString(args, 'instance_id'), {
+          status: optionalInboxStatus(args),
+          action_required: optionalBoolean(args, 'action_required'),
+          priority: optionalInboxPriority(args),
+          step_id: optionalString(args, 'step_id'),
+          limit: optionalNumber(args, 'limit'),
+        }) });
+      }
+      case 'workflow_inbox_mark': {
+        return envelope(markInboxEntries(requiredString(args, 'instance_id'), requiredStringArray(args, 'entry_ids'), requiredInboxStatus(args)));
+      }
+      case 'workflow_validate_template': {
+        const name = requiredString(args, 'name');
+        const template = loadTemplate(name);
+        const prompts = loadPromptSnapshots(template, name);
+        return envelope(validateTemplateControlPlane(template, prompts));
       }
       default:
         return null;
     }
   } catch (err) {
-    return ok(`❌ ${err instanceof Error ? err.message : String(err)}`);
+    return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err), errorDetails(err));
   }
 }
 
-function ok(text: string) {
-  return { content: [{ type: 'text' as const, text }] };
+function envelope<T>(data: T) {
+  return text({ ok: true, data });
 }
 
-function formatJson(value: unknown): string {
-  return `\`\`\`json\n${JSON.stringify(value, null, 2)}\n\`\`\``;
+function envelopeError(code: string, message: string, details?: unknown) {
+  return text({ ok: false, error: { code, message, ...(details !== undefined ? { details } : {}) } });
+}
+
+function text(value: ToolEnvelope) {
+  return { content: [{ type: 'text' as const, text: JSON.stringify(value, null, 2) }] };
+}
+
+function errorCode(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const prefix = message.match(/^([A-Z_]+):/);
+  if (prefix) return prefix[1];
+  if (message.includes('Checkpoint validation failed')) return 'CHECKPOINT_VALIDATION_FAILED';
+  if (message.includes('not found')) return 'NOT_FOUND';
+  if (message.includes('already')) return 'CONFLICT';
+  if (message.includes('Missing required')) return 'INVALID_ARGUMENT';
+  return 'INTERNAL_ERROR';
+}
+
+function errorDetails(err: unknown): unknown {
+  return err && typeof err === 'object' && 'details' in err ? (err as { details?: unknown }).details : undefined;
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -252,8 +442,66 @@ function objectArg<T extends object>(args: Record<string, unknown>, key: string)
   return value as T;
 }
 
+function optionalObject<T extends object>(args: Record<string, unknown>, key: string): T | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Invalid object: ${key}`);
+  return value as T;
+}
+
+function arrayArg<T>(args: Record<string, unknown>, key: string): T[] {
+  const value = args[key];
+  if (!Array.isArray(value)) throw new Error(`Missing required array: ${key}`);
+  return value as T[];
+}
+
+function requiredStringArray(args: Record<string, unknown>, key: string): string[] {
+  const value = args[key];
+  if (!Array.isArray(value) || value.some(item => typeof item !== 'string')) throw new Error(`Missing required string array: ${key}`);
+  return value as string[];
+}
+
+function optionalBoolean(args: Record<string, unknown>, key: string): boolean | undefined {
+  const value = args[key];
+  return typeof value === 'boolean' ? value : undefined;
+}
+
+function paramsArg(args: Record<string, unknown>, key: string): Record<string, string> {
+  const value = objectArg<Record<string, unknown>>(args, key);
+  const params: Record<string, string> = {};
+  for (const [paramKey, paramValue] of Object.entries(value)) {
+    if (typeof paramValue === 'object' && paramValue !== null) throw new Error(`Invalid parameter value: ${paramKey}`);
+    params[paramKey] = String(paramValue);
+  }
+  return params;
+}
+
 function optionalStatus(args: Record<string, unknown>): 'active' | 'completed' | 'all' | undefined {
   const value = args.status;
   if (value === 'active' || value === 'completed' || value === 'all') return value;
+  return undefined;
+}
+
+function optionalInboxStatus(args: Record<string, unknown>): InboxStatus | undefined {
+  const value = args.status;
+  if (value === 'new' || value === 'seen' || value === 'acted') return value;
+  return undefined;
+}
+
+function requiredInboxStatus(args: Record<string, unknown>): InboxStatus {
+  const status = optionalInboxStatus(args);
+  if (!status) throw new Error('Missing required string: status');
+  return status;
+}
+
+function optionalInboxPriority(args: Record<string, unknown>): InboxPriority | undefined {
+  const value = args.priority;
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'blocking') return value;
+  return undefined;
+}
+
+function optionalWorklogMode(args: Record<string, unknown>): WorklogMode | undefined {
+  const value = args.mode;
+  if (value === 'summary' || value === 'full' || value === 'handoff' || value === 'release_note') return value;
   return undefined;
 }

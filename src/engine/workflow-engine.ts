@@ -1,6 +1,7 @@
 import type { ConfigOverrides } from '../config.js';
 import type {
   AdvanceOptions,
+  CheckpointValidationError,
   CreateTemplateOptions,
   ParamsDef,
   WorkflowAdvanceResult,
@@ -10,9 +11,12 @@ import type {
   WorkflowTemplate,
 } from '../types.js';
 import { validateCheckpoint } from './checkpoint-engine.js';
+import { assertOutputsSize, assertPromptSize } from './limits.js';
+import { recordEvent } from './event-log.js';
+import { assertStepId } from './security.js';
 import {
   createTemplate,
-  loadPrompt,
+  loadPromptSnapshots,
   loadTemplate,
   normalizeParams,
   validateTemplate,
@@ -36,6 +40,7 @@ export function startWorkflow(
 ): WorkflowCurrentResult {
   const template = loadTemplate(templateName, overrides);
   validateTemplate(template, { templateName, requirePrompts: true, config: overrides });
+  const promptSnapshots = loadPromptSnapshots(template, templateName, overrides);
   const normalizedParams = normalizeParams(template.params);
   const resolvedParams = resolveParams(normalizedParams, params);
   if (alias) ensureAliasAvailable(alias, undefined, overrides);
@@ -54,13 +59,18 @@ export function startWorkflow(
     current_step: firstStep.id,
     created_at: now,
     updated_at: now,
+    version: 1,
     steps,
     prompt_overrides: {},
+    template_snapshot: template,
+    prompt_snapshots: promptSnapshots,
     token_usage: { total_consumed: 0, per_step: {} },
     ...(alias ? { alias } : {}),
   };
-  saveInstance(instance, overrides);
-  return currentFromInstance(template, instance, overrides);
+  const saved = saveInstance(instance, overrides);
+  recordEvent('workflow.started', saved.id, { template: templateName, alias }, undefined, overrides);
+  recordEvent('step.started', saved.id, { step: firstStep.id }, firstStep.id, overrides);
+  return currentFromInstance(saved, overrides);
 }
 
 function resolveParams(defs: ParamsDef, params: Record<string, string>): Record<string, string> {
@@ -92,15 +102,33 @@ export function getCurrent(instanceIdOrAlias?: string, overrides: ConfigOverride
     instance = listInstances({ status: 'active' }, overrides).instances[0];
     if (!instance) throw new Error('No active workflow instance found');
   }
-  const template = loadTemplate(instance.template, overrides);
-  return currentFromInstance(template, instance, overrides);
+  return currentFromInstance(instance, overrides);
 }
 
-function currentFromInstance(template: WorkflowTemplate, instance: WorkflowInstance, overrides: ConfigOverrides): WorkflowCurrentResult {
+function currentFromInstance(instance: WorkflowInstance, overrides: ConfigOverrides): WorkflowCurrentResult {
+  const template = templateForInstance(instance, overrides);
   const step = findStep(template, instance.current_step);
-  const promptText = instance.prompt_overrides[step.id] ?? loadPrompt(instance.template, step.id, overrides);
+  const promptText = instance.prompt_overrides[step.id] ?? promptForInstance(instance, step.id, overrides);
   const prompt = renderPrompt(promptText, instance);
   return { instance, step, prompt };
+}
+
+function templateForInstance(instance: WorkflowInstance, overrides: ConfigOverrides): WorkflowTemplate {
+  if (instance.template_snapshot) return instance.template_snapshot;
+  return loadTemplate(instance.template, overrides);
+}
+
+function promptForInstance(instance: WorkflowInstance, stepId: string, overrides: ConfigOverrides): string {
+  assertStepId(stepId);
+  const snapshot = instance.prompt_snapshots?.[stepId];
+  if (snapshot !== undefined) return snapshot;
+  if (instance.template_snapshot && instance.prompt_snapshots) {
+    throw new Error(`PROMPT_SNAPSHOT_MISSING: ${stepId}`);
+  }
+  const prompts = loadPromptSnapshots(templateForInstance(instance, overrides), instance.template, overrides);
+  const prompt = prompts[stepId];
+  if (prompt === undefined) throw new Error(`Prompt not found in snapshot: ${stepId}`);
+  return prompt;
 }
 
 export function advanceWorkflow(
@@ -112,7 +140,8 @@ export function advanceWorkflow(
   const instance = resolveInstance(instanceId, overrides);
   if (instance.status === 'completed') throw new Error(`Workflow instance already completed: ${instance.id}`);
 
-  const template = loadTemplate(instance.template, overrides);
+  assertOutputsSize(outputs);
+  const template = templateForInstance(instance, overrides);
   const step = findStep(template, instance.current_step);
 
   const proposedConsumed = (instance.token_usage?.total_consumed ?? 0) + Math.max(0, options.token_consumed ?? 0);
@@ -120,12 +149,17 @@ export function advanceWorkflow(
     throw new Error(`Token budget exhausted: ${proposedConsumed} / ${template.token_budget.total}`);
   }
 
-  const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? []);
+  const validation = validateCheckpoint(step, outputs, options.confirmed_conditions ?? [], options.evidence ?? {}, options.approvals ?? {});
   if (!validation.ok) {
+    const details = checkpointFailureDetails(validation.errors);
+    recordEvent('step.validation_failed', instance.id, { errors: validation.errors, details }, step.id, overrides);
     const message = validation.errors.map(error => `${error.message}${error.help ? ` (${error.help})` : ''}`).join('; ');
-    throw new Error(`Checkpoint validation failed: ${message}`);
+    const err = new Error(`Checkpoint validation failed: ${message}`);
+    (err as Error & { details?: unknown }).details = details;
+    throw err;
   }
 
+  const expectedVersion = instance.version;
   const now = new Date().toISOString();
   instance.steps[step.id] = {
     ...instance.steps[step.id],
@@ -144,22 +178,44 @@ export function advanceWorkflow(
   if (nextStepId === null) {
     instance.status = 'completed';
     instance.updated_at = now;
-    saveInstance(instance, overrides);
-    return { completed: true, instance };
+    const saved = saveInstance(instance, overrides, { expectedVersion });
+    recordEvent('step.completed', saved.id, { outputs }, step.id, overrides);
+    recordEvent('workflow.completed', saved.id, { step: step.id }, undefined, overrides);
+    return { completed: true, instance: saved };
   }
 
   const nextStep = findStep(template, nextStepId);
   instance.current_step = nextStep.id;
   instance.steps[nextStep.id] = { ...instance.steps[nextStep.id], status: 'in_progress', started_at: now };
   instance.updated_at = now;
-  saveInstance(instance, overrides);
+  const saved = saveInstance(instance, overrides, { expectedVersion });
 
-  const nextPromptText = instance.prompt_overrides[nextStep.id] ?? loadPrompt(instance.template, nextStep.id, overrides);
+  recordEvent('step.completed', saved.id, { outputs }, step.id, overrides);
+  recordEvent('step.started', saved.id, { step: nextStep.id }, nextStep.id, overrides);
+  const nextPromptText = saved.prompt_overrides[nextStep.id] ?? promptForInstance(saved, nextStep.id, overrides);
   return {
     completed: false,
-    instance,
+    instance: saved,
     next_step: nextStep,
-    next_prompt: renderPrompt(nextPromptText, instance),
+    next_prompt: renderPrompt(nextPromptText, saved),
+  };
+}
+
+function checkpointFailureDetails(errors: CheckpointValidationError[]) {
+  const missingRequired = errors.filter(error => error.kind === 'required_output').map(error => error.field).filter((field): field is string => Boolean(field));
+  const missingEvidence = errors.filter(error => error.kind === 'evidence').map(error => error.field).filter((field): field is string => Boolean(field));
+  const missingApprovals = errors.filter(error => error.kind === 'approval').map(error => error.field).filter((field): field is string => Boolean(field));
+  return {
+    readiness: 'blocked',
+    missing_required: missingRequired,
+    missing_evidence: missingEvidence,
+    missing_approvals: missingApprovals,
+    suggestions: [
+      ...missingRequired.map(field => `Complete required output: ${field}`),
+      ...missingEvidence.map(field => `Attach required evidence: ${field}`),
+      ...missingApprovals.map(field => `Collect required approval: ${field}`),
+    ],
+    errors,
   };
 }
 
@@ -173,7 +229,7 @@ function resolveNextStep(step: WorkflowStep, conditionResult?: string): string |
 
 export function getWorkflowStatus(instanceIdOrAlias: string, overrides: ConfigOverrides = {}): { instance: WorkflowInstance; template: WorkflowTemplate; steps: WorkflowStep[] } {
   const instance = resolveInstance(instanceIdOrAlias, overrides);
-  const template = loadTemplate(instance.template, overrides);
+  const template = templateForInstance(instance, overrides);
   return { instance, template, steps: template.steps };
 }
 
@@ -186,14 +242,18 @@ export function bindWorkflowAlias(instanceId: string, alias: string, overrides: 
 }
 
 export function overridePrompt(instanceIdOrAlias: string, stepId: string, prompt: string, overrides: ConfigOverrides = {}): WorkflowInstance {
+  assertStepId(stepId);
+  assertPromptSize(prompt);
   if (!prompt.trim()) throw new Error('Prompt must not be empty');
   const instance = resolveInstance(instanceIdOrAlias, overrides);
-  const template = loadTemplate(instance.template, overrides);
+  const template = templateForInstance(instance, overrides);
   findStep(template, stepId);
+  const expectedVersion = instance.version;
   instance.prompt_overrides[stepId] = prompt;
   instance.updated_at = new Date().toISOString();
-  saveInstance(instance, overrides);
-  return instance;
+  const saved = saveInstance(instance, overrides, { expectedVersion });
+  recordEvent('prompt.overridden', saved.id, { step_id: stepId }, stepId, overrides);
+  return saved;
 }
 
 export function createWorkflowTemplate(options: CreateTemplateOptions, overrides: ConfigOverrides = {}): { path: string } {
@@ -201,6 +261,7 @@ export function createWorkflowTemplate(options: CreateTemplateOptions, overrides
 }
 
 function findStep(template: WorkflowTemplate, stepId: string): WorkflowStep {
+  assertStepId(stepId);
   const step = template.steps.find(candidate => candidate.id === stepId);
   if (!step) throw new Error(`Step not found in template ${template.name}: ${stepId}`);
   return step;
