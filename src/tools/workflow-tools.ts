@@ -1,5 +1,5 @@
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import type { CreateTemplateOptions, InboxStatus, ToolEnvelope, WorkflowEventType } from '../types.js';
+import type { CreateTemplateOptions, InboxPriority, InboxStatus, ToolEnvelope, WorkflowEventType, WorklogMode } from '../types.js';
 import { summarizeOutputs } from '../engine/limits.js';
 import { queryEvents } from '../engine/event-log.js';
 import { buildDashboard } from '../engine/dashboard-engine.js';
@@ -143,6 +143,11 @@ export const workflowTools: Tool[] = [
         type: { type: 'string', description: 'Optional event type filter' },
         step_id: { type: 'string', description: 'Optional step ID filter' },
         limit: { type: 'number', description: 'Max events, default 50, max 200' },
+        since: { type: 'string', description: 'Only events at or after this ISO timestamp' },
+        until: { type: 'string', description: 'Only events at or before this ISO timestamp' },
+        only_failures: { type: 'boolean', description: 'Only validation failure events' },
+        include_payload: { type: 'boolean', description: 'Include full event payload' },
+        summary: { type: 'boolean', description: 'Return summarized payloads when include_payload is false' },
       },
       required: ['instance_id'],
     },
@@ -159,6 +164,7 @@ export const workflowTools: Tool[] = [
         include_inbox: { type: 'boolean', description: 'Include inbox summary and recent entries' },
         event_limit: { type: 'number', description: 'Recent event limit' },
         inbox_limit: { type: 'number', description: 'Recent inbox entry limit' },
+        verbose: { type: 'boolean', description: 'Include detailed checkpoint and inbox entries' },
       },
     },
   },
@@ -167,7 +173,12 @@ export const workflowTools: Tool[] = [
     description: 'Generate a Markdown worklog from instance state and events.',
     inputSchema: {
       type: 'object',
-      properties: { instance_id: { type: 'string', description: 'Instance ID or alias' } },
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias' },
+        mode: { type: 'string', enum: ['summary', 'full', 'handoff', 'release_note'], description: 'Worklog rendering mode' },
+        write_file: { type: 'boolean', description: 'Write markdown to disk' },
+        path: { type: 'string', description: 'Optional path under dataDir when write_file=true' },
+      },
       required: ['instance_id'],
     },
   },
@@ -178,7 +189,7 @@ export const workflowTools: Tool[] = [
       type: 'object',
       properties: {
         instance_id: { type: 'string', description: 'Instance ID' },
-        entries: { type: 'array', description: 'Inbox entries to save', items: { type: 'object' } },
+        entries: { type: 'array', description: 'Inbox entries to save; supports priority and step_id', items: { type: 'object' } },
       },
       required: ['instance_id', 'entries'],
     },
@@ -192,6 +203,8 @@ export const workflowTools: Tool[] = [
         instance_id: { type: 'string', description: 'Instance ID' },
         status: { type: 'string', enum: ['new', 'seen', 'acted'] },
         action_required: { type: 'boolean' },
+        priority: { type: 'string', enum: ['low', 'medium', 'high', 'blocking'] },
+        step_id: { type: 'string' },
         limit: { type: 'number' },
       },
       required: ['instance_id'],
@@ -321,6 +334,11 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
             type: optionalString(args, 'type') as WorkflowEventType | undefined,
             step_id: optionalString(args, 'step_id'),
             limit: optionalNumber(args, 'limit'),
+            since: optionalString(args, 'since'),
+            until: optionalString(args, 'until'),
+            only_failures: optionalBoolean(args, 'only_failures'),
+            include_payload: optionalBoolean(args, 'include_payload'),
+            summary: optionalBoolean(args, 'summary'),
           }),
         });
       }
@@ -331,10 +349,15 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
           include_inbox: optionalBoolean(args, 'include_inbox'),
           event_limit: optionalNumber(args, 'event_limit'),
           inbox_limit: optionalNumber(args, 'inbox_limit'),
+          verbose: optionalBoolean(args, 'verbose'),
         }));
       }
       case 'workflow_worklog': {
-        return envelope(buildWorklog(requiredString(args, 'instance_id')));
+        return envelope(buildWorklog(requiredString(args, 'instance_id'), {
+          mode: optionalWorklogMode(args),
+          write_file: optionalBoolean(args, 'write_file'),
+          path: optionalString(args, 'path'),
+        }));
       }
       case 'workflow_inbox_save': {
         return envelope(saveInboxEntries(requiredString(args, 'instance_id'), arrayArg(args, 'entries')));
@@ -343,6 +366,8 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         return envelope({ entries: listInboxEntries(requiredString(args, 'instance_id'), {
           status: optionalInboxStatus(args),
           action_required: optionalBoolean(args, 'action_required'),
+          priority: optionalInboxPriority(args),
+          step_id: optionalString(args, 'step_id'),
           limit: optionalNumber(args, 'limit'),
         }) });
       }
@@ -359,7 +384,7 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
         return null;
     }
   } catch (err) {
-    return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err));
+    return envelopeError(errorCode(err), err instanceof Error ? err.message : String(err), errorDetails(err));
   }
 }
 
@@ -384,6 +409,10 @@ function errorCode(err: unknown): string {
   if (message.includes('already')) return 'CONFLICT';
   if (message.includes('Missing required')) return 'INVALID_ARGUMENT';
   return 'INTERNAL_ERROR';
+}
+
+function errorDetails(err: unknown): unknown {
+  return err && typeof err === 'object' && 'details' in err ? (err as { details?: unknown }).details : undefined;
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {
@@ -463,4 +492,16 @@ function requiredInboxStatus(args: Record<string, unknown>): InboxStatus {
   const status = optionalInboxStatus(args);
   if (!status) throw new Error('Missing required string: status');
   return status;
+}
+
+function optionalInboxPriority(args: Record<string, unknown>): InboxPriority | undefined {
+  const value = args.priority;
+  if (value === 'low' || value === 'medium' || value === 'high' || value === 'blocking') return value;
+  return undefined;
+}
+
+function optionalWorklogMode(args: Record<string, unknown>): WorklogMode | undefined {
+  const value = args.mode;
+  if (value === 'summary' || value === 'full' || value === 'handoff' || value === 'release_note') return value;
+  return undefined;
 }

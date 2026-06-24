@@ -29,7 +29,9 @@ export function inspectCheckpoint(instance: WorkflowInstance, step: WorkflowStep
     missing_evidence: missingEvidence,
     missing_approvals: missingApprovals,
     can_advance: blockingReasons.length === 0,
+    readiness: blockingReasons.length ? 'blocked' : optionalMissing.length ? 'warning' : 'ready',
     blocking_reasons: blockingReasons,
+    suggestions: blockingReasons.length ? blockingReasons : ['Ready to advance workflow'],
   };
 }
 

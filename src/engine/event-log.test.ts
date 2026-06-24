@@ -1,8 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, rmSync } from 'fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import type { WorkflowEvent } from '../types.js';
 import { queryEvents, readEvents, recordEvent } from './event-log.js';
 
 function tempConfig() {
@@ -46,6 +47,27 @@ test('queryEvents filters by type and step id with limit bounds', () => {
     assert.deepEqual(queryEvents(instanceId, { step_id: 'one' }, config).map(event => event.type), ['step.started', 'step.completed']);
     assert.deepEqual(queryEvents(instanceId, { limit: 2 }, config).map(event => event.type), ['step.completed', 'step.started']);
     assert.throws(() => queryEvents(instanceId, { limit: 0 }, config), /INVALID_ARGUMENT/);
+  } finally {
+    rmSync(config.homeDir, { recursive: true, force: true });
+  }
+});
+
+test('queryEvents supports time filters failures and payload controls', () => {
+  const config = tempConfig();
+  try {
+    const instanceId = 'wf_20260101000000_abc123';
+    recordEvent('workflow.started', instanceId, { outputs: { raw: 'secret' } }, undefined, config);
+    recordEvent('step.validation_failed', instanceId, { errors: [{ message: 'bad' }] }, 'one', config);
+    const path = join(config.dataDir, 'events', `${instanceId}.jsonl`);
+    const events = readFileSync(path, 'utf-8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line) as WorkflowEvent);
+    events[0].timestamp = '2026-01-01T00:00:00.000Z';
+    events[1].timestamp = '2026-01-02T00:00:00.000Z';
+    writeFileSync(path, `${events.map(event => JSON.stringify(event)).join('\n')}\n`, 'utf-8');
+
+    assert.deepEqual(queryEvents(instanceId, { since: '2026-01-01T12:00:00.000Z', include_payload: true }, config).map(event => event.type), ['step.validation_failed']);
+    assert.deepEqual(queryEvents(instanceId, { only_failures: true, include_payload: true }, config).map(event => event.type), ['step.validation_failed']);
+    assert.equal(queryEvents(instanceId, { include_payload: false }, config)[0].payload, undefined);
+    assert.deepEqual(queryEvents(instanceId, { summary: true }, config)[0].payload, { outputs: { output_keys: ['raw'], outputs_preview: { raw: 'secret' } } });
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }

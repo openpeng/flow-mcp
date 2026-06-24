@@ -37,7 +37,7 @@ test('dashboard shows blockers, prompt, inbox, and suggested actions', () => {
   try {
     createDashboardTemplate(config);
     const started = startWorkflow('dashboard-demo', { change_name: 'demo' }, undefined, config);
-    saveInboxEntries(started.instance.id, [{ source: 'manual', type: 'comment', title: 'Need review', summary: 'Review', action_required: true }], config);
+    saveInboxEntries(started.instance.id, [{ source: 'manual', type: 'comment', title: 'Need review', summary: 'Review', action_required: true, priority: 'blocking' }], config);
 
     const dashboard = buildDashboard(started.instance.id, { include_prompt: true, include_inbox: true, include_recent_events: true }, config);
     assert.match(dashboard.prompt ?? '', /demo/);
@@ -46,7 +46,9 @@ test('dashboard shows blockers, prompt, inbox, and suggested actions', () => {
     assert.deepEqual(dashboard.outputs.missing_evidence, ['test_log']);
     assert.deepEqual(dashboard.outputs.missing_approvals, ['user_confirmed']);
     assert.equal(dashboard.inbox?.action_required, 1);
-    assert.equal(dashboard.suggested_actions.some(action => action.includes('test_log')), true);
+    assert.equal(dashboard.progress.total_steps, 1);
+    assert.equal(dashboard.risk.level, 'blocking');
+    assert.equal(dashboard.suggested_actions.some(action => action.title.includes('test_log') && action.action_type === 'provide_evidence'), true);
   } finally {
     rmSync(config.homeDir, { recursive: true, force: true });
   }

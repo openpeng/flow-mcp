@@ -192,7 +192,14 @@ export interface WorkflowEventsQuery {
   type?: WorkflowEventType;
   step_id?: string;
   limit?: number;
+  since?: string;
+  until?: string;
+  only_failures?: boolean;
+  include_payload?: boolean;
+  summary?: boolean;
 }
+
+export type CheckpointReadiness = 'ready' | 'blocked' | 'warning';
 
 export interface CheckpointInspectionResult {
   completed: string[];
@@ -201,19 +208,25 @@ export interface CheckpointInspectionResult {
   missing_evidence: string[];
   missing_approvals: string[];
   can_advance: boolean;
+  readiness: CheckpointReadiness;
   blocking_reasons: string[];
+  suggestions: string[];
 }
+
+export type InboxPriority = 'low' | 'medium' | 'high' | 'blocking';
 
 export interface InboxEntry {
   id: string;
   instance_id: string;
   source: 'manual' | 'git' | 'ci' | 'review' | 'tapd' | 'other';
-  type: 'comment' | 'failure' | 'approval' | 'blocker' | 'info';
+  type: 'comment' | 'failure' | 'approval' | 'blocker' | 'info' | 'dependency';
   title: string;
   summary: string;
   action_required: boolean;
   status: 'new' | 'seen' | 'acted';
   timestamp: string;
+  priority?: InboxPriority;
+  step_id?: string;
   external_id?: string;
   url?: string;
   dedup_key?: string;
@@ -226,8 +239,36 @@ export interface InboxSummary {
   total: number;
   unread: number;
   action_required: number;
+  blocking: number;
+  high: number;
   by_status: Record<InboxStatus, number>;
+  by_priority: Record<InboxPriority, number>;
   latest_timestamp?: string;
+}
+
+export type SuggestedActionRisk = 'low' | 'medium' | 'high' | 'blocking';
+
+export interface SuggestedAction {
+  action_type: string;
+  title: string;
+  reason: string;
+  tool_hint?: string;
+  risk: SuggestedActionRisk;
+}
+
+export interface DashboardProgress {
+  total_steps: number;
+  completed_steps: number;
+  current_index: number;
+  percent: number;
+}
+
+export interface DashboardRisk {
+  level: SuggestedActionRisk;
+  checkpoint_blocked: boolean;
+  validation_failures: number;
+  inbox_blocking: number;
+  inbox_high: number;
 }
 
 export interface WorkflowDashboardResult {
@@ -243,16 +284,22 @@ export interface WorkflowDashboardResult {
     name: string;
     checkpoint?: CheckpointDef;
   };
+  progress: DashboardProgress;
+  risk: DashboardRisk;
   prompt?: string;
   outputs: CheckpointInspectionResult;
   checkpoint: {
+    readiness: CheckpointReadiness;
     can_advance: boolean;
     blocking_reasons: string[];
   };
   recent_events?: WorkflowEvent[];
   inbox?: InboxSummary & { entries?: InboxEntry[] };
-  suggested_actions: string[];
+  suggested_actions: SuggestedAction[];
+  warnings: string[];
 }
+
+export type WorklogMode = 'summary' | 'full' | 'handoff' | 'release_note';
 
 export interface WorkflowWorklogResult {
   markdown: string;
@@ -261,12 +308,17 @@ export interface WorkflowWorklogResult {
     failed_validations: number;
     latest_step: string;
   };
+  path?: string;
 }
+
+export type ValidationIssueSeverity = 'error' | 'warning';
 
 export interface ValidationIssue {
   code: string;
   message: string;
   step_id?: string;
+  severity?: ValidationIssueSeverity;
+  suggestion?: string;
 }
 
 export interface TemplateValidationResult {

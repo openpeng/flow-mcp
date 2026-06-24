@@ -22,10 +22,13 @@ test('inbox save list mark and summary', () => {
       summary: 'Please review',
       action_required: true,
       timestamp: '2026-01-01T00:00:00.000Z',
+      priority: 'blocking',
+      step_id: 'verify',
     }], config);
     assert.equal(saved.saved_count, 1);
-    assert.equal(listInboxEntries(instanceId, { status: 'new' }, config).length, 1);
+    assert.equal(listInboxEntries(instanceId, { status: 'new', priority: 'blocking', step_id: 'verify' }, config).length, 1);
     assert.equal(summarizeInbox(instanceId, config).action_required, 1);
+    assert.equal(summarizeInbox(instanceId, config).blocking, 1);
 
     const marked = markInboxEntries(instanceId, [saved.entries[0].id], 'acted', config);
     assert.equal(marked.updated_count, 1);
