@@ -298,33 +298,98 @@ foreach ($c in $clients) {
 }
 
 # ==============================================================================
-# Step 7: 安装 Skill (仅 TRAE)
+# Step 7: 注入 AI 操作指南
 # ==============================================================================
 
 $skillTargets = @()
+$guideTargets = @()  # 非 TRAE 客户端的操作指南文件
 
+# TRAE: 原生 Skill 机制
 if ($clients -contains "trae" -or $clients -contains "all") {
-    # 全局 Skill
     $globalSkillDir = "$env:USERPROFILE\.trae-cn\builtin\global\skills\oflow-mcp"
     $skillTargets += $globalSkillDir
-
-    # 项目级 Skill（如果当前目录有 .trae）
     if (Test-Path ".trae\skills") {
         $skillTargets += ".trae\skills\oflow-mcp"
     }
 }
 
+# 非 TRAE 客户端: 通过各自机制注入操作指南
+$aiGuideContent = @"
+# oflow-mcp 工作流操作指南
+
+你是 oflow-mcp 工作流引擎的操作助手。当用户提到"开始工作流"、"继续工作流"、"当前步骤"、"推进到下一步"时，你应该使用 workflow_* 系列工具。
+
+## 核心职责
+
+1. 理解用户意图（启动/继续/查看进度/其他）
+2. 调用 workflow_* 工具完成操作
+3. 按步骤 prompt 指引执行具体任务
+4. 推进前通过 checkpoint 校验（required_outputs、conditions、evidence、approvals）
+5. workflow_advance 时携带完整的 outputs 和 confirmed_conditions
+
+## 工具速查
+
+| 工具 | 用途 | 关键参数 |
+|------|------|----------|
+| workflow_list_templates | 列出可用模板 | 无 |
+| workflow_get_template | 获取模板详情 | name |
+| workflow_start | 启动实例 | template, params, alias(可选) |
+| workflow_current | 获取当前步骤 + prompt | instance_id(可选) |
+| workflow_advance | 推进到下一步 | instance_id, outputs, confirmed_conditions |
+| workflow_status | 查看全貌 | instance_id |
+| workflow_dashboard | 控制面板 | instance_id |
+
+## 核心工作流
+
+1. **识别意图**: 用户说"开始 basic-dev 工作流" -> workflow_start
+2. **获取步骤**: workflow_current -> 按返回的 prompt 执行
+3. **推进**: workflow_advance 时提供所有 required_outputs
+4. **校验失败**: 读取 error.details.suggestions，补充后重试
+
+## 完整指南
+
+详见源码目录 SKILL.md。触发关键词: 开始工作流、继续工作流、当前步骤、推进到下一步。
+"@
+
+if ($clients -contains "cursor" -or $clients -contains "all") {
+    $cursorRulesPath = "$SrcDir\.cursorrules"
+    Set-Content -Path $cursorRulesPath -Value $aiGuideContent -Encoding UTF8 -Force
+    $guideTargets += @{ path = $cursorRulesPath; client = "Cursor"; type = ".cursorrules" }
+    Write-Ok "Cursor 操作指南已写入: $cursorRulesPath"
+}
+
+if ($clients -contains "cline" -or $clients -contains "all") {
+    $clineRulesPath = "$SrcDir\.clinerules"
+    Set-Content -Path $clineRulesPath -Value $aiGuideContent -Encoding UTF8 -Force
+    $guideTargets += @{ path = $clineRulesPath; client = "Cline"; type = ".clinerules" }
+    Write-Ok "Cline 操作指南已写入: $clineRulesPath"
+}
+
+if ($clients -contains "windsurf" -or $clients -contains "all") {
+    $windsurfDir = "$SrcDir\.windsurf\rules"
+    if (-not (Test-Path $windsurfDir)) { New-Item -ItemType Directory -Path $windsurfDir -Force | Out-Null }
+    $windsurfPath = "$windsurfDir\oflow-mcp.md"
+    Set-Content -Path $windsurfPath -Value $aiGuideContent -Encoding UTF8 -Force
+    $guideTargets += @{ path = $windsurfPath; client = "Windsurf"; type = "rules" }
+    Write-Ok "Windsurf 操作指南已写入: $windsurfPath"
+}
+
+if ($clients -contains "claude" -or $clients -contains "all") {
+    Write-Info "Claude Desktop 不支持文件级自动加载，请在 Claude 的 Project Instructions 中手动粘贴操作指南"
+    Write-Info "操作指南已保存到: $SrcDir\AI_GUIDE.md (供手动复制)"
+    Set-Content -Path "$SrcDir\AI_GUIDE.md" -Value $aiGuideContent -Encoding UTF8 -Force
+}
+
+# 安装 TRAE Skill
 if ($skillTargets.Count -gt 0) {
     foreach ($skillDir in $skillTargets) {
-        Write-Info "安装 Skill -> $skillDir"
+        Write-Info "安装 TRAE Skill -> $skillDir"
         if (-not (Test-Path $skillDir)) {
             New-Item -ItemType Directory -Path $skillDir -Force | Out-Null
         }
         Copy-Item -Path "$SrcDir\SKILL.md" -Destination "$skillDir\SKILL.md" -Force
-        Write-Ok "Skill 已安装: $skillDir"
+        Write-Ok "TRAE Skill 已安装: $skillDir"
     }
-} else {
-    Write-Info "当前客户端不需要安装 Skill（仅 TRAE 支持 Skill）"
 }
 
 # ==============================================================================
@@ -369,19 +434,30 @@ foreach ($c in $clients) {
     }
 }
 
-# 验证 3: Skill 文件
+# 验证 3: 操作指南文件
 if ($skillTargets.Count -gt 0) {
     foreach ($sd in $skillTargets) {
         if (Test-Path "$sd\SKILL.md") {
             $skillContent = Get-Content "$sd\SKILL.md" -Raw
             if ($skillContent -match 'name:\s*oflow-mcp') {
-                Write-Ok "[PASS] Skill 文件有效: $sd"
+                Write-Ok "[PASS] TRAE Skill 文件有效: $sd"
             } else {
-                Write-Err "[FAIL] Skill frontmatter 无效: $sd"
+                Write-Err "[FAIL] TRAE Skill frontmatter 无效: $sd"
                 $allPassed = $false
             }
         } else {
-            Write-Err "[FAIL] Skill 文件不存在: $sd"
+            Write-Err "[FAIL] TRAE Skill 文件不存在: $sd"
+            $allPassed = $false
+        }
+    }
+}
+
+if ($guideTargets.Count -gt 0) {
+    foreach ($gt in $guideTargets) {
+        if (Test-Path $gt.path) {
+            Write-Ok "[PASS] $($gt.client) 操作指南已写入: $($gt.path)"
+        } else {
+            Write-Err "[FAIL] $($gt.client) 操作指南未找到: $($gt.path)"
             $allPassed = $false
         }
     }
@@ -424,4 +500,15 @@ Write-Host "下一步操作:" -ForegroundColor White
 Write-Host "  1. 重启 AI 客户端（TRAE / Cursor / Claude Desktop 等）" -ForegroundColor White
 Write-Host "  2. 在对话中输入 /mcp 验证 MCP Server 连接" -ForegroundColor White
 Write-Host "  3. 尝试使用: '列出工作流模板' 或 'workflow_list_templates'" -ForegroundColor White
+
+if ($guideTargets.Count -gt 0) {
+    Write-Host ""
+    Write-Host "操作指南文件已生成在源码目录，请按需复制到你的工作项目中:" -ForegroundColor Yellow
+    foreach ($gt in $guideTargets) {
+        Write-Host "  - $($gt.client): 复制 $($gt.path) -> <你的项目根目录>/" -ForegroundColor White
+    }
+}
+if ($clients -contains "claude" -or $clients -contains "all") {
+    Write-Host "  - Claude Desktop: 打开 Claude Project Instructions，粘贴 $SrcDir\AI_GUIDE.md 内容" -ForegroundColor White
+}
 Write-Host ""

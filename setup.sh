@@ -275,36 +275,100 @@ for c in "${CLIENTS[@]}"; do
 done
 
 # ==============================================================================
-# Step 7: 安装 Skill (仅 TRAE)
+# Step 7: 注入 AI 操作指南
 # ==============================================================================
 
 SKILL_TARGETS=()
+GUIDE_TARGETS=()
 
 install_skill() {
     local target_dir="$1"
-    log_info "安装 Skill -> $target_dir"
+    log_info "安装 TRAE Skill -> $target_dir"
     mkdir -p "$target_dir"
     cp "$SRC_DIR/SKILL.md" "$target_dir/SKILL.md"
-    log_ok "Skill 已安装: $target_dir"
+    log_ok "TRAE Skill 已安装: $target_dir"
 }
 
+# TRAE: 原生 Skill 机制
 for c in "${CLIENTS[@]}"; do
     if [[ "$c" == "trae" ]]; then
-        # 全局 Skill
         SKILL_TARGETS+=("$HOME/.trae-cn/builtin/global/skills/oflow-mcp")
-        # 项目级 Skill
         if [[ -d ".trae/skills" ]]; then
             SKILL_TARGETS+=(".trae/skills/oflow-mcp")
         fi
     fi
 done
 
+# 非 TRAE 客户端: 创建操作指南文件
+AI_GUIDE=$(cat <<'EOF'
+# oflow-mcp 工作流操作指南
+
+你是 oflow-mcp 工作流引擎的操作助手。当用户提到"开始工作流"、"继续工作流"、"当前步骤"、"推进到下一步"时，你应该使用 workflow_* 系列工具。
+
+## 核心职责
+
+1. 理解用户意图（启动/继续/查看进度/其他）
+2. 调用 workflow_* 工具完成操作
+3. 按步骤 prompt 指引执行具体任务
+4. 推进前通过 checkpoint 校验（required_outputs、conditions、evidence、approvals）
+5. workflow_advance 时携带完整的 outputs 和 confirmed_conditions
+
+## 工具速查
+
+| 工具 | 用途 | 关键参数 |
+|------|------|----------|
+| workflow_list_templates | 列出可用模板 | 无 |
+| workflow_get_template | 获取模板详情 | name |
+| workflow_start | 启动实例 | template, params, alias(可选) |
+| workflow_current | 获取当前步骤 + prompt | instance_id(可选) |
+| workflow_advance | 推进到下一步 | instance_id, outputs, confirmed_conditions |
+| workflow_status | 查看全貌 | instance_id |
+| workflow_dashboard | 控制面板 | instance_id |
+
+## 核心工作流
+
+1. **识别意图**: 用户说"开始 basic-dev 工作流" -> workflow_start
+2. **获取步骤**: workflow_current -> 按返回的 prompt 执行
+3. **推进**: workflow_advance 时提供所有 required_outputs
+4. **校验失败**: 读取 error.details.suggestions，补充后重试
+
+## 完整指南
+
+详见源码目录 SKILL.md。触发关键词: 开始工作流、继续工作流、当前步骤、推进到下一步。
+EOF
+)
+
+for c in "${CLIENTS[@]}"; do
+    case "$c" in
+        cursor)
+            echo "$AI_GUIDE" > "$SRC_DIR/.cursorrules"
+            GUIDE_TARGETS+=("Cursor:$SRC_DIR/.cursorrules")
+            log_ok "Cursor 操作指南已写入: $SRC_DIR/.cursorrules"
+            ;;
+        cline)
+            echo "$AI_GUIDE" > "$SRC_DIR/.clinerules"
+            GUIDE_TARGETS+=("Cline:$SRC_DIR/.clinerules")
+            log_ok "Cline 操作指南已写入: $SRC_DIR/.clinerules"
+            ;;
+        windsurf)
+            mkdir -p "$SRC_DIR/.windsurf/rules"
+            echo "$AI_GUIDE" > "$SRC_DIR/.windsurf/rules/oflow-mcp.md"
+            GUIDE_TARGETS+=("Windsurf:$SRC_DIR/.windsurf/rules/oflow-mcp.md")
+            log_ok "Windsurf 操作指南已写入: $SRC_DIR/.windsurf/rules/oflow-mcp.md"
+            ;;
+        claude)
+            log_info "Claude Desktop 不支持文件级自动加载，请在 Claude 的 Project Instructions 中手动粘贴操作指南"
+            echo "$AI_GUIDE" > "$SRC_DIR/AI_GUIDE.md"
+            log_info "操作指南已保存到: $SRC_DIR/AI_GUIDE.md (供手动复制)"
+            ;;
+    esac
+done
+
+# 安装 TRAE Skill
 if [[ ${#SKILL_TARGETS[@]} -gt 0 ]]; then
     for sd in "${SKILL_TARGETS[@]}"; do
         install_skill "$sd"
     done
-else
-    log_info "当前客户端不需要安装 Skill（仅 TRAE 支持 Skill）"
 fi
 
 # ==============================================================================
@@ -339,12 +403,23 @@ for c in "${CLIENTS[@]}"; do
     fi
 done
 
-# 验证 3: Skill 文件
+# 验证 3: 操作指南文件
 for sd in "${SKILL_TARGETS[@]}"; do
     if [[ -f "$sd/SKILL.md" ]] && grep -q 'name:\s*oflow-mcp' "$sd/SKILL.md"; then
-        log_ok "[PASS] Skill 文件有效: $sd"
+        log_ok "[PASS] TRAE Skill 文件有效: $sd"
     else
-        log_err "[FAIL] Skill 文件不存在或无效: $sd"
+        log_err "[FAIL] TRAE Skill 文件不存在或无效: $sd"
+        ALL_PASSED=false
+    fi
+done
+
+for gt in "${GUIDE_TARGETS[@]}"; do
+    client="${gt%%:*}"
+    path="${gt#*:}"
+    if [[ -f "$path" ]]; then
+        log_ok "[PASS] $client 操作指南已写入: $path"
+    else
+        log_err "[FAIL] $client 操作指南未找到: $path"
         ALL_PASSED=false
     fi
 done
@@ -383,4 +458,17 @@ echo "下一步操作:"
 echo "  1. 重启 AI 客户端（TRAE / Cursor / Claude Desktop 等）"
 echo "  2. 在对话中输入 /mcp 验证 MCP Server 连接"
 echo "  3. 尝试使用: '列出工作流模板' 或 'workflow_list_templates'"
+
+if [[ ${#GUIDE_TARGETS[@]} -gt 0 ]]; then
+    echo ""
+    echo "操作指南文件已生成在源码目录，请按需复制到你的工作项目中:"
+    for gt in "${GUIDE_TARGETS[@]}"; do
+        client="${gt%%:*}"
+        path="${gt#*:}"
+        echo "  - $client: 复制 $path -> <你的项目根目录>/"
+    done
+fi
+if [[ " ${CLIENTS[*]} " =~ " claude " ]]; then
+    echo "  - Claude Desktop: 打开 Claude Project Instructions，粘贴 $SRC_DIR/AI_GUIDE.md 内容"
+fi
 echo ""
