@@ -9,6 +9,8 @@ import type {
   ParamsDef,
   RequiredOutputDef,
   TemplateSummary,
+  TemplateRouteMatch,
+  TemplateRouting,
   WorkflowStep,
   WorkflowTemplate,
 } from '../types.js';
@@ -49,7 +51,10 @@ export function listTemplates(overrides: ConfigOverrides = {}): TemplateSummary[
         return {
           name: template.name,
           description: template.description,
+          description_short: template.routing?.description_short,
           step_count: template.steps?.length ?? 0,
+          keywords: template.routing?.keywords,
+          priority: template.routing?.priority,
           path,
         };
       } catch (err) {
@@ -204,4 +209,120 @@ export function createTemplate(options: CreateTemplateOptions, overrides: Config
   }
 
   return { path: dir };
+}
+
+// ─── Phase 8: Template routing (L0 → L1 → L2 discovery) ───
+
+/** Get routing metadata for a single template */
+export function getTemplateRouting(name: string, overrides: ConfigOverrides = {}): TemplateRouting | undefined {
+  try {
+    const def = loadTemplate(name, overrides);
+    return def.routing;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Collect routing metadata from all templates */
+export function getAllTemplatesRouting(overrides: ConfigOverrides = {}): { name: string; description: string; routing: TemplateRouting; step_count: number }[] {
+  const results: { name: string; description: string; routing: TemplateRouting; step_count: number }[] = [];
+  for (const summary of listTemplates(overrides)) {
+    if (summary.invalid) continue;
+    try {
+      const def = loadTemplate(summary.name, overrides);
+      if (def.routing) {
+        results.push({ name: summary.name, description: summary.description, routing: def.routing, step_count: summary.step_count });
+      } else {
+        results.push({
+          name: summary.name,
+          description: summary.description,
+          routing: {
+            keywords: [],
+            description_short: summary.description.slice(0, 50),
+            priority: 0,
+          },
+          step_count: summary.step_count,
+        });
+      }
+    } catch { /* skip broken */ }
+  }
+  return results.sort((a, b) => b.routing.priority - a.routing.priority);
+}
+
+/** Match templates by user intent keyword matching */
+export function matchTemplatesByIntent(intent: string, overrides: ConfigOverrides = {}): TemplateRouteMatch[] {
+  const normalized = intent.toLowerCase();
+  const results: TemplateRouteMatch[] = [];
+
+  for (const { name, description, routing, step_count } of getAllTemplatesRouting(overrides)) {
+    if (routing.keywords.length === 0 && !routing.triggers) continue;
+
+    const matchedKeywords: string[] = [];
+
+    for (const kw of routing.keywords) {
+      if (normalized.includes(kw.toLowerCase())) {
+        matchedKeywords.push(kw);
+      }
+    }
+
+    if (routing.triggers) {
+      for (const trigger of routing.triggers) {
+        try {
+          if (new RegExp(trigger, 'i').test(normalized)) {
+            matchedKeywords.push(`trigger:${trigger}`);
+          }
+        } catch { /* skip invalid regex */ }
+      }
+    }
+
+    if (matchedKeywords.length > 0) {
+      results.push({
+        template: name,
+        description,
+        description_short: routing.description_short,
+        score: matchedKeywords.length + routing.priority,
+        keywords_matched: matchedKeywords,
+        priority: routing.priority,
+        step_count,
+      });
+    }
+  }
+
+  return results.sort((a, b) => b.score - a.score);
+}
+
+/** Build compact routing table for AI instruction injection */
+export function buildRoutingTable(overrides: ConfigOverrides = {}): string {
+  const templates = getAllTemplatesRouting(overrides);
+  if (templates.length === 0) return '';
+
+  const hasRouting = templates.filter(t => t.routing.keywords.length > 0);
+  if (hasRouting.length === 0) return '';
+
+  const lines = [
+    '| 使用场景 | 模板 | 关键词触发 |',
+    '|------|------|------|',
+  ];
+
+  for (const t of hasRouting) {
+    lines.push(`| ${t.routing.description_short} | \`${t.name}\` | ${t.routing.keywords.join(', ')} |`);
+  }
+
+  return lines.join('\n');
+}
+
+/** List templates with routing info, optionally filtered by query */
+export function listTemplatesWithRouting(query?: string, overrides: ConfigOverrides = {}): TemplateRouteMatch[] {
+  if (!query) {
+    return getAllTemplatesRouting(overrides).map(t => ({
+      template: t.name,
+      description: t.description,
+      description_short: t.routing.description_short,
+      score: t.routing.priority,
+      keywords_matched: [],
+      priority: t.routing.priority,
+      step_count: t.step_count,
+    }));
+  }
+  return matchTemplatesByIntent(query, overrides);
 }

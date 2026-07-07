@@ -63,6 +63,31 @@ export interface WorkflowTemplate {
   params: string[] | ParamsDef;
   steps: WorkflowStep[];
   token_budget?: TokenBudget;
+  /** Phase 8: 模板路由元数据 — AI 自动发现和匹配模板 */
+  routing?: TemplateRouting;
+}
+
+/** Phase 8: 模板路由元数据 */
+export interface TemplateRouting {
+  /** 触发关键词 */
+  keywords: string[];
+  /** 单行简短描述（~30字，用于路由表紧凑展示） */
+  description_short: string;
+  /** 正则触发模式（可选） */
+  triggers?: string[];
+  /** 优先级（数值越大越优先） */
+  priority: number;
+}
+
+/** Phase 8: 模板路由匹配结果 */
+export interface TemplateRouteMatch {
+  template: string;
+  description: string;
+  description_short: string;
+  score: number;
+  keywords_matched: string[];
+  priority: number;
+  step_count?: number;
 }
 
 export type StepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
@@ -134,10 +159,14 @@ export interface OflowConfig {
 export interface TemplateSummary {
   name: string;
   description: string;
+  description_short?: string;
   step_count: number;
   path: string;
   invalid?: boolean;
   error?: string;
+  /** Phase 8: 路由关键词（用于 AI 意图匹配） */
+  keywords?: string[];
+  priority?: number;
 }
 
 export interface ListInstancesResult {

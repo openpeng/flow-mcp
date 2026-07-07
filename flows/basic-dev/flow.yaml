@@ -1,5 +1,12 @@
 name: basic-dev
 description: Minimal Agent-native development workflow
+routing:
+  keywords: ["开发", "实现", "需求", "编程", "coding", "develop", "分析", "设计", "验证"]
+  description_short: "基础开发流程（分析→设计→验证）"
+  triggers:
+    - "开发.*(功能|需求|代码)"
+    - "(实现|编写).*(功能|代码)"
+  priority: 5
 params:
   change_name:
     type: string

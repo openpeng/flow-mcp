@@ -6,7 +6,7 @@ import { queryEvents } from '../engine/event-log.js';
 import { buildDashboard } from '../engine/dashboard-engine.js';
 import { saveInboxEntries, listInboxEntries, markInboxEntries } from '../engine/inbox-store.js';
 import { buildWorklog } from '../engine/worklog-engine.js';
-import { loadPromptSnapshots, listTemplates, loadTemplate } from '../engine/template-store.js';
+import { loadPromptSnapshots, listTemplates, loadTemplate, listTemplatesWithRouting } from '../engine/template-store.js';
 import { validateTemplateControlPlane } from '../engine/template-validator.js';
 import {
   advanceWorkflow,
@@ -23,8 +23,13 @@ import { findRelevantMemories } from '../engine/memory-lookup.js';
 export const workflowTools: Tool[] = [
   {
     name: 'workflow_list_templates',
-    description: 'List available workflow templates.',
-    inputSchema: { type: 'object', properties: {} },
+    description: 'List available workflow templates. Supports optional query parameter for intent-based keyword matching and ranking.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional: describe task intent for keyword-based template matching and ranking' },
+      },
+    },
   },
   {
     name: 'workflow_get_template',
@@ -254,8 +259,28 @@ export const workflowTools: Tool[] = [
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
   try {
     switch (name) {
-      case 'workflow_list_templates':
+      case 'workflow_list_templates': {
+        const query = optionalString(args, 'query');
+        if (query) {
+          const matches = listTemplatesWithRouting(query);
+          if (matches.length === 0) {
+            return envelope({ templates: listTemplates(), query, note: `No matches found for "${query}". Showing all templates.` });
+          }
+          return envelope({
+            query,
+            matches: matches.map(m => ({
+              template: m.template,
+              score: m.score,
+              keywords_matched: m.keywords_matched,
+              description_short: m.description_short,
+              description: m.description,
+              step_count: m.step_count,
+            })),
+            suggestion: `Recommended: '${matches[0].template}' — use workflow_start template="${matches[0].template}" params={...}`,
+          });
+        }
         return envelope({ templates: listTemplates() });
+      }
       case 'workflow_get_template': {
         const template = loadTemplate(requiredString(args, 'name'));
         return envelope({
