@@ -50,10 +50,8 @@ steps:
           check: "outputs.page_status != null AND len(outputs.page_status) > 10"
           help: "请仔细检查页面内容，确认是否有审核按钮，并用 page_status 描述当前页面状态"
     next:
-      branches:
-        - condition: "outputs.has_approve_button != null"
-          step: review_sql_risk
-      fallback: notify_unsupported
+      pass: review_sql_risk
+      fail: notify_unsupported
 
   - id: review_sql_risk
     name: 审查 SQL 风险
@@ -81,10 +79,8 @@ steps:
           check: "outputs.has_backup != null"
           help: "请检查页面中是否有备份相关的声明或确认（如用户已勾选备份选项、页面提示已备份等），或 SQL 语句中是否包含备份操作"
     next:
-      branches:
-        - condition: "outputs.risk_level == 'high'"
-          step: confirm_risk
-      fallback: approve_sql
+      pass: approve_sql
+      fail: confirm_risk
 
   - id: confirm_risk
     name: 高风险确认
@@ -100,10 +96,8 @@ steps:
           check: "outputs.user_confirmed != null"
           help: "请向用户展示风险详情并等待明确回复，确认继续则设置 user_confirmed=true，放弃则设为 false"
     next:
-      branches:
-        - condition: "outputs.user_confirmed == 'true'"
-          step: approve_sql
-      fallback: notify_unsupported
+      pass: approve_sql
+      fail: notify_unsupported
 
   - id: approve_sql
     name: 点击审核通过
