@@ -3,7 +3,10 @@ import type {
   AdvanceOptions,
   CheckpointValidationError,
   CreateTemplateOptions,
+  DelegateStepResult,
+  ExecutionMode,
   ParamsDef,
+  StepToolRef,
   WorkflowAdvanceResult,
   WorkflowCurrentResult,
   WorkflowInstance,
@@ -32,7 +35,8 @@ import {
   saveInstance,
 } from './instance-store.js';
 import { renderPrompt } from './prompt-engine.js';
-import { buildMemoryInjection } from './memory-lookup.js';
+import { buildMemoryInjection, findRelevantMemories, type MemorySummary } from './memory-lookup.js';
+import { buildToolContracts } from '../tools/workflow-tools.js';
 
 export function startWorkflow(
   templateName: string,
@@ -281,6 +285,108 @@ export function overridePrompt(instanceIdOrAlias: string, stepId: string, prompt
 
 export function createWorkflowTemplate(options: CreateTemplateOptions, overrides: ConfigOverrides = {}): { path: string } {
   return createTemplate(options, overrides);
+}
+
+const BASE_TOOLS = ['search', 'general_purpose_task'];
+
+export function delegateStep(instanceIdOrAlias?: string, overrides: ConfigOverrides = {}): DelegateStepResult {
+  let instance: WorkflowInstance | undefined;
+  if (instanceIdOrAlias) {
+    instance = resolveInstance(instanceIdOrAlias, overrides);
+  } else {
+    instance = listInstances({ status: 'active' }, overrides).instances[0];
+    if (!instance) throw new OflowError('NOT_FOUND', 'No active workflow instance found');
+  }
+  const template = templateForInstance(instance, overrides);
+  const step = findStep(template, instance.current_step);
+
+  const executionMode: ExecutionMode = step.execution ?? 'inline';
+  const stepTools = step.tools ?? [];
+  const allTools = mergeBaseAndStepTools(stepTools);
+  const requiredOutputs = extractRequiredOutputs(step);
+
+  const canDelegate = executionMode === 'delegate';
+
+  const promptText = instance.prompt_overrides[step.id] ?? promptForInstance(instance, step.id, overrides);
+  const rendered = renderPrompt(promptText, instance);
+  const memoryInjection = buildMemoryInjection(step.name);
+  const prompt = memoryInjection ? memoryInjection + '\n' + rendered : rendered;
+
+  const launchContext = buildLaunchContext(instance, step, template, allTools);
+
+  return {
+    instance_id: instance.id,
+    step_id: step.id,
+    execution_mode: executionMode,
+    tools: allTools,
+    agent: step.agent,
+    prompt,
+    required_outputs: requiredOutputs,
+    can_delegate: canDelegate,
+    launch_context: launchContext,
+  };
+}
+
+function buildLaunchContext(
+  instance: WorkflowInstance,
+  step: WorkflowStep,
+  template: WorkflowTemplate,
+  tools: (string | { name: string; type: 'mcp' | 'skill' })[],
+): { previous_outputs: Record<string, Record<string, unknown>>; memory_summary: string; project_context?: string; tools_contract: { name: string; description: string; parameters: { name: string; type: string; required: boolean; description?: string }[] }[] } {
+  const previousOutputs: Record<string, Record<string, unknown>> = {};
+  for (const [stepId, stepState] of Object.entries(instance.steps)) {
+    if (stepId !== step.id && stepState.status === 'done' && stepState.outputs && Object.keys(stepState.outputs).length > 0) {
+      previousOutputs[stepId] = stepState.outputs as Record<string, unknown>;
+    }
+  }
+
+  const mems = findRelevantMemories(step.name);
+  const memorySummary = mems.length > 0
+    ? mems.map((m: MemorySummary) => `[${m.type}] ${m.name}: ${m.summary}`).join('\n')
+    : '';
+
+  const toolsContract = buildToolContracts(tools);
+
+  return {
+    previous_outputs: previousOutputs,
+    memory_summary: memorySummary,
+    ...(template.global_context ? { project_context: template.global_context } : {}),
+    tools_contract: toolsContract,
+  };
+}
+
+function mergeBaseAndStepTools(stepTools: (string | StepToolRef)[]): (string | StepToolRef)[] {
+  const result: (string | StepToolRef)[] = [...BASE_TOOLS];
+  const seenNames = new Set(BASE_TOOLS);
+
+  for (const tool of stepTools) {
+    const name = typeof tool === 'string' ? tool : tool.name;
+    if (!seenNames.has(name)) {
+      seenNames.add(name);
+      result.push(tool);
+    }
+  }
+
+  return result;
+}
+
+function extractRequiredOutputs(step: WorkflowStep): string[] {
+  const outputs: string[] = [];
+  const required = step.checkpoint?.required_outputs ?? [];
+
+  if (Array.isArray(required)) {
+    for (const item of required) {
+      if (typeof item === 'string') {
+        outputs.push(item);
+      } else if (item && typeof item === 'object') {
+        outputs.push(...Object.keys(item));
+      }
+    }
+  } else if (required && typeof required === 'object') {
+    outputs.push(...Object.keys(required));
+  }
+
+  return outputs;
 }
 
 function findStep(template: WorkflowTemplate, stepId: string): WorkflowStep {

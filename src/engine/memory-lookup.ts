@@ -7,7 +7,7 @@ import { homedir } from 'os';
 const CODEBUDDY_PROJECTS_DIR = process.env.CODEBUDDY_PROJECTS_DIR ??
   join(homedir(), '.codebuddy', 'projects');
 
-interface MemorySummary {
+export interface MemorySummary {
   name: string;
   type: string;
   summary: string;

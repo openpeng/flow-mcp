@@ -10,6 +10,7 @@ test('tool list exposes workflow tools only', () => {
     'workflow_create_template',
     'workflow_current',
     'workflow_dashboard',
+    'workflow_delegate',
     'workflow_events',
     'workflow_get_template',
     'workflow_inbox_list',

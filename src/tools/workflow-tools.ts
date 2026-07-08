@@ -12,6 +12,7 @@ import {
   advanceWorkflow,
   bindWorkflowAlias,
   createWorkflowTemplate,
+  delegateStep,
   getCurrent,
   getWorkflowStatus,
   listWorkflowInstances,
@@ -61,6 +62,16 @@ export const workflowTools: Tool[] = [
       properties: {
         instance_id: { type: 'string', description: 'Instance ID or alias' },
         include_memories: { type: 'boolean', description: 'Include memory summaries at the top of the prompt. Default true.' },
+      },
+    },
+  },
+  {
+    name: 'workflow_delegate',
+    description: 'Delegate current step execution to a sub-agent with only the required tools. Returns step configuration including tools, agent config, and prompt. If can_delegate is false, use workflow_current instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        instance_id: { type: 'string', description: 'Instance ID or alias. If omitted, uses most recent active instance.' },
       },
     },
   },
@@ -313,6 +324,20 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
           prompt: result.prompt,
         });
       }
+      case 'workflow_delegate': {
+        const result = delegateStep(optionalString(args, 'instance_id'));
+        return envelope({
+          instance_id: result.instance_id,
+          step_id: result.step_id,
+          execution_mode: result.execution_mode,
+          tools: result.tools,
+          agent: result.agent,
+          prompt: result.prompt,
+          required_outputs: result.required_outputs,
+          can_delegate: result.can_delegate,
+          launch_context: result.launch_context,
+        });
+      }
       case 'workflow_advance': {
         const result = advanceWorkflow(requiredString(args, 'instance_id'), objectArg<Record<string, unknown>>(args, 'outputs'), {
           confirmed_conditions: optionalStringArray(args, 'confirmed_conditions'),
@@ -471,6 +496,50 @@ function errorCode(err: unknown): string {
 function errorDetails(err: unknown): unknown {
   if (isOflowError(err)) return err.details;
   return err && typeof err === 'object' && 'details' in err ? (err as { details?: unknown }).details : undefined;
+}
+
+import type { ToolContract } from '../types.js';
+
+export function buildToolContracts(toolNames: (string | { name: string; type: 'mcp' | 'skill' })[]): ToolContract[] {
+  const contracts: ToolContract[] = [];
+  const oflowTools = new Map(workflowTools.map(t => [t.name, t]));
+
+  for (const toolRef of toolNames) {
+    const toolName = typeof toolRef === 'string' ? toolRef : toolRef.name;
+    const mcpTool = oflowTools.get(toolName);
+
+    if (mcpTool) {
+      contracts.push(toolSchemaToContract(mcpTool));
+    } else {
+      const toolType = typeof toolRef === 'string' ? 'MCP' : (toolRef.type || 'MCP');
+      contracts.push({
+        name: toolName,
+        description: `External tool: ${toolType === 'skill' ? 'Skill' : 'MCP'}`,
+        parameters: [],
+      });
+    }
+  }
+
+  return contracts;
+}
+
+function toolSchemaToContract(tool: Tool): ToolContract {
+  const schema = tool.inputSchema as { type?: string; properties?: Record<string, { type?: string; description?: string }>; required?: string[] } || {};
+  const properties = schema.properties || {};
+  const required = schema.required || [];
+
+  const parameters = Object.entries(properties).map(([name, prop]) => ({
+    name,
+    type: prop.type || 'string',
+    required: required.includes(name),
+    description: prop.description,
+  }));
+
+  return {
+    name: tool.name,
+    description: tool.description || '',
+    parameters,
+  };
 }
 
 function requiredString(args: Record<string, unknown>, key: string): string {

@@ -50,11 +50,27 @@ export interface BranchDef {
   step: string;
 }
 
+export type ExecutionMode = 'inline' | 'delegate';
+
+export interface StepToolRef {
+  name: string;
+  type: 'mcp' | 'skill';
+}
+
+export interface StepAgentConfig {
+  model?: string;
+  temperature?: number;
+  max_tokens?: number;
+}
+
 export interface WorkflowStep {
   id: string;
   name: string;
   checkpoint?: CheckpointDef;
   next: string | null | Record<string, string> | { branches: BranchDef[]; fallback: string };
+  execution?: ExecutionMode;
+  tools?: (string | StepToolRef)[];
+  agent?: StepAgentConfig;
 }
 
 export interface TokenBudget {
@@ -68,6 +84,8 @@ export interface WorkflowTemplate {
   params: string[] | ParamsDef;
   steps: WorkflowStep[];
   token_budget?: TokenBudget;
+  /** 全局项目上下文，注入所有子 Agent */
+  global_context?: string;
   /** Phase 8: 模板路由元数据 — AI 自动发现和匹配模板 */
   routing?: TemplateRouting;
   /** URL 模式匹配（可选） */
@@ -219,6 +237,43 @@ export interface WorkflowAdvanceResult {
   instance: WorkflowInstance;
   next_step?: WorkflowStep;
   next_prompt?: string;
+}
+
+export interface ToolContractParameter {
+  name: string;
+  type: string;
+  required: boolean;
+  description?: string;
+}
+
+export interface ToolContract {
+  name: string;
+  description: string;
+  parameters: ToolContractParameter[];
+}
+
+export interface StepLaunchContext {
+  /** 前序已完成步骤的 outputs（结构化，自动提取，无需模板作者手动插值） */
+  previous_outputs: Record<string, Record<string, unknown>>;
+  /** 当前步骤相关的 L2 记忆摘要 */
+  memory_summary: string;
+  /** 模板级全局项目上下文（如 CODEBUDDY.md 规范摘要） */
+  project_context?: string;
+  /** 工具契约清单（自动从工具 schema 生成，消除名字/参数/语义漂移） */
+  tools_contract: ToolContract[];
+}
+
+export interface DelegateStepResult {
+  instance_id: string;
+  step_id: string;
+  execution_mode: ExecutionMode;
+  tools: (string | StepToolRef)[];
+  agent?: StepAgentConfig;
+  prompt: string;
+  required_outputs: string[];
+  can_delegate: boolean;
+  /** 子 Agent 启动上下文包 — 自动构建，解决上下文断层和规范丢失 */
+  launch_context: StepLaunchContext;
 }
 
 export interface CreateTemplateOptions {

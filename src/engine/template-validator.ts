@@ -17,6 +17,9 @@ export function validateTemplateControlPlane(template: WorkflowTemplate, prompts
     checkBranchShape(step, warnings);
     checkDuplicateKeys(step, errors);
     checkMissingDescriptions(step, warnings);
+    checkExecutionMode(step, warnings);
+    checkStepTools(step, warnings);
+    checkStepAgentConfig(step, warnings);
   }
   for (const [stepId, prompt] of Object.entries(prompts)) {
     checkPromptRefs(stepId, prompt, template, stepIds, params, errors, warnings);
@@ -121,6 +124,34 @@ function checkMissingDescriptions(step: WorkflowStep, warnings: ValidationIssue[
   }
   for (const def of step.checkpoint?.approvals ?? []) {
     if (!def.description) warnings.push(issue('APPROVAL_DESCRIPTION_MISSING', `Approval ${def.key} has no description`, 'warning', step.id, 'Add description so dashboard can explain who/what should approve'));
+  }
+}
+
+function checkExecutionMode(step: WorkflowStep, warnings: ValidationIssue[]): void {
+  if (step.execution && !['inline', 'delegate'].includes(step.execution)) {
+    warnings.push(issue('INVALID_EXECUTION_MODE', `Invalid execution mode: ${step.execution}`, 'warning', step.id, 'Use "inline" or "delegate"'));
+  }
+}
+
+function checkStepTools(step: WorkflowStep, warnings: ValidationIssue[]): void {
+  if (!step.tools) return;
+  for (const tool of step.tools) {
+    if (typeof tool === 'string') {
+      if (!tool.trim()) warnings.push(issue('EMPTY_TOOL_NAME', 'Tool name is empty', 'warning', step.id, 'Provide a valid tool name'));
+    } else if (tool && typeof tool === 'object') {
+      if (!tool.name || !tool.name.trim()) warnings.push(issue('EMPTY_TOOL_NAME', 'Tool name is empty', 'warning', step.id, 'Provide a valid tool name'));
+      if (tool.type && !['mcp', 'skill'].includes(tool.type)) warnings.push(issue('INVALID_TOOL_TYPE', `Invalid tool type: ${tool.type}`, 'warning', step.id, 'Use "mcp" or "skill"'));
+    }
+  }
+}
+
+function checkStepAgentConfig(step: WorkflowStep, warnings: ValidationIssue[]): void {
+  if (!step.agent) return;
+  if (step.agent.temperature !== undefined && (step.agent.temperature < 0 || step.agent.temperature > 2)) {
+    warnings.push(issue('INVALID_AGENT_TEMPERATURE', `Temperature should be between 0 and 2: ${step.agent.temperature}`, 'warning', step.id, 'Use a value between 0 and 2'));
+  }
+  if (step.agent.max_tokens !== undefined && step.agent.max_tokens <= 0) {
+    warnings.push(issue('INVALID_AGENT_MAX_TOKENS', `max_tokens should be positive: ${step.agent.max_tokens}`, 'warning', step.id, 'Use a positive number'));
   }
 }
 

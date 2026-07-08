@@ -26,6 +26,7 @@ description: 使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。当用
 | `workflow_get_template` | 获取模板详情和步骤摘要 | `name` |
 | `workflow_start` | 启动工作流实例 | `template`, `params`, `alias`(可选) |
 | `workflow_current` | 获取当前步骤 + 渲染后的 prompt（默认附带相关记忆） | `instance_id`(可选), `include_memories`(可选) |
+| `workflow_delegate` | 委托当前步骤给子 Agent 执行（仅加载所需工具） | `instance_id`(可选) |
 | `workflow_advance` | 完成当前步骤并推进 | `instance_id`, `outputs`, `confirmed_conditions`(可选), `condition_result`(可选), `token_consumed`(可选), `evidence`(可选), `approvals`(可选) |
 | `workflow_status` | 查看工作流全貌（所有步骤状态 + 输出摘要） | `instance_id` |
 | `workflow_list_instances` | 列出实例（按状态/模板过滤） | `status`(可选), `template`(可选) |
@@ -114,7 +115,142 @@ workflow_current(instance_id: "demo-run", include_memories: false)
 按需分析并输出设计文档...
 ```
 
-### 阶段 4：推进到下一步
+### 阶段 4：子 Agent 委托执行
+
+当步骤配置为 `execution: delegate` 时，主 Agent 应该将步骤执行委托给子 Agent。子 Agent 只加载该步骤声明的工具，避免主 Agent 上下文膨胀。
+
+**重要**：`oflow-mcp` 本身只是 MCP Server，**不能自己 spawn 子 Agent**。spawn 子 Agent 是宿主平台（TRAE/CodeBuddy）的能力。`workflow_delegate` 只返回工具配置声明，由主 Agent 决定是否使用 `Task` 工具启动子 Agent。
+
+```typescript
+workflow_delegate(instance_id: "demo-run")
+```
+
+**返回值解读**：
+```json
+{
+  "ok": true,
+  "data": {
+    "instance_id": "wf_20260702120000_abc123",
+    "step_id": "analyze",
+    "execution_mode": "delegate",
+    "tools": ["search", "general_purpose_task", "gitnexus-exploring"],
+    "agent": { "model": "gpt-4o", "temperature": 0.7 },
+    "prompt": "## 当前任务\n分析 demo change...",
+    "required_outputs": ["analysis_summary"],
+    "can_delegate": true,
+    "launch_context": {
+      "previous_outputs": {
+        "prepare": { "scope_summary": "..." }
+      },
+      "memory_summary": "[project] api-convention — REST API 约定：kebab-case 端点",
+      "project_context": "# 项目全局约束\n- 所有接口变更必须保持向后兼容\n- 使用 TypeScript 5.x 严格模式"
+    }
+  }
+}
+```
+
+**`launch_context` — 子 Agent 启动上下文包**（自动构建，解决上下文断层和工具契约漂移）：
+
+| 字段 | 内容 | 解决的风险 |
+|------|------|-----------|
+| `previous_outputs` | 前序已完成步骤的 outputs（结构化，自动提取） | **风险1：上下文断层** |
+| `memory_summary` | 当前步骤相关的 L2 记忆摘要 | **风险2：约束丢失** |
+| `project_context` | 模板级全局项目规范（`flow.yaml` 的 `global_context`） | **风险2：约束丢失** |
+| `tools_contract` | 工具契约清单（自动从工具 schema 生成，含名字、参数、必填性） | **工具契约漂移**：名字/参数/语义 |
+
+**委托执行策略**：
+
+| `can_delegate` | 主 Agent 操作 |
+|----------------|--------------|
+| `true` | 使用 `Task` 工具启动子 Agent，传入 `launch_context` + `prompt` + `tools`，让子 Agent 在完整上下文下执行任务 |
+| `false` | 使用 `workflow_current` 在主 Agent 中直接执行（回退模式） |
+
+**步骤工具配置**（在 flow.yaml 中）：
+```yaml
+name: basic-dev
+description: Minimal development workflow
+global_context: |
+  # 项目全局约束
+  - 所有接口变更必须保持向后兼容
+  - 使用 TypeScript 5.x 严格模式
+
+steps:
+  - id: analyze
+    name: Analyze
+    execution: delegate
+    tools:
+      - search
+      - gitnexus-exploring
+    agent:
+      model: gpt-4o
+      temperature: 0.7
+```
+
+**基础工具**（自动注入，无需声明）：
+- `search`：代码库搜索
+- `general_purpose_task`：通用编码任务
+
+**完整委托流程**：
+
+```
+1. 主 Agent 调用 workflow_delegate(instance_id)
+      ↓
+2. 收到返回：{ can_delegate: true, tools: [...], prompt: "...",
+               launch_context: { previous_outputs: {...}, memory_summary: "...", project_context: "..." } }
+      ↓
+3. 主 Agent 使用 Task 工具启动子 Agent：
+   - subagent_type: 根据任务类型选择
+   - query: 传入 prompt + launch_context + required_outputs 说明
+      ↓
+4. 子 Agent 在完整上下文（前序产出 + 项目规范 + 记忆）下执行任务
+      ↓
+5. 子 Agent 返回 outputs（如 { analysis_summary: "..." }）
+      ↓
+6. 主 Agent 调用 workflow_advance(instance_id, outputs) 推进工作流
+```
+
+**子 Agent 跑偏的 3 个风险与缓解**：
+
+| 风险 | 说明 | 缓解措施 |
+|------|------|---------|
+| 1. 前置上下文断层 | 子 Agent 是全新会话，拿不到主 Agent 的隐式记忆 | `launch_context.previous_outputs` **自动提取**前序步骤产出，无需模板作者手动插值 |
+| 2. 全局约束丢失 | CODEBUDDY.md、项目规范等丢失 | `launch_context.project_context` 从 `flow.yaml` 的 `global_context` 注入；`launch_context.memory_summary` 注入相关 L2 记忆 |
+| 3. 工具裁剪过度 | 声明的工具不够用 | 基础工具 `search` + `general_purpose_task` 覆盖 80% 场景；模板作者声明时"宁宽勿窄" |
+
+**工具契约漂移的 3 种形态与缓解**：
+
+| 漂移类型 | 说明 | 缓解措施 |
+|---------|------|---------|
+| 名字漂移 | 子代理看到的工具名是 `mcp__flow-mcp__workflow_start`，prompt 里可能写的是 `workflow_start` | `launch_context.tools_contract` **自动生成**工具真实名称，不依赖人手动对齐 |
+| 参数契约漂移 | 不知道哪些必填、哪些可选、值类型是什么 | `tools_contract` 包含每个参数的 `name`、`type`、`required`、`description` |
+| 语义漂移 | 同一工具在不同语境理解不同 | `tools_contract` 包含工具的官方 `description`，确保语义一致 |
+
+**`tools_contract` 示例**：
+```json
+"tools_contract": [
+  {
+    "name": "workflow_start",
+    "description": "Start a workflow instance from a template.",
+    "parameters": [
+      { "name": "template", "type": "string", "required": true, "description": "Template name" },
+      { "name": "params", "type": "object", "required": true, "description": "String workflow parameters" },
+      { "name": "alias", "type": "string", "required": false, "description": "Optional instance alias" }
+    ]
+  },
+  {
+    "name": "workflow_advance",
+    "description": "Complete the current step and advance the workflow after checkpoint validation.",
+    "parameters": [
+      { "name": "instance_id", "type": "string", "required": true, "description": "Instance ID or alias" },
+      { "name": "outputs", "type": "object", "required": true, "description": "Step outputs" }
+    ]
+  }
+]
+```
+
+**关键认知**：工具名和参数契约应该是**引擎产出、自动注入**，而不是**主代理在 prompt 里手敲转述**。`tools_contract` 从工具 schema 自动生成，彻底消除人写 prompt 对齐名字的环节。
+
+### 阶段 5：推进到下一步
 
 这是最关键的一步。`workflow_advance` 会做 checkpoint 校验，校验不通过则拒绝推进。
 
@@ -169,7 +305,7 @@ workflow_advance(
 
 **你应该做**：阅读 `details.suggestions` 中的建议，补充缺失项后重新调用。
 
-### 阶段 5：条件分支
+### 阶段 6：条件分支
 
 当步骤的 `next` 是分支映射时，需要传 `condition_result`：
 
@@ -190,7 +326,7 @@ workflow_advance(instance_id: "...", outputs: {}, condition_result: "pass")
 workflow_advance(instance_id: "...", outputs: {}, condition_result: "fail")
 ```
 
-### 阶段 6：流程完成
+### 阶段 7：流程完成
 
 当最后一步 `next: null` 且校验通过时，`workflow_advance` 返回：
 
