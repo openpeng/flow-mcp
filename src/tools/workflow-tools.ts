@@ -20,6 +20,7 @@ import {
   startWorkflow,
 } from '../engine/workflow-engine.js';
 import { findRelevantMemories } from '../engine/memory-lookup.js';
+import { sendWechatMessage } from './wechat-notify.js';
 
 export const workflowTools: Tool[] = [
   {
@@ -265,6 +266,19 @@ export const workflowTools: Tool[] = [
       required: ['step_name'],
     },
   },
+  {
+    name: 'wechat_send_message',
+    description: 'Send a message to an employee via WeCom (企业微信). Supports name (Chinese name or employee ID) and message content. Some users may require employee ID (nonum) if name lookup fails.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Employee name (Chinese name or employee ID' },
+        msg: { type: 'string', description: 'Message content to send' },
+        nonum: { type: 'string', description: 'Optional: employee ID, required for some users' },
+      },
+      required: ['name', 'msg'],
+    },
+  },
 ];
 
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
@@ -459,6 +473,14 @@ export async function handleWorkflowTool(name: string, args: Record<string, unkn
             summary: m.summary,
           })),
         });
+      }
+      case 'wechat_send_message': {
+        const result = await sendWechatMessage(
+          requiredString(args, 'name'),
+          requiredString(args, 'msg'),
+          optionalString(args, 'nonum'),
+        );
+        return envelope(result);
       }
       default:
         return null;

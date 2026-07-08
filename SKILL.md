@@ -41,6 +41,7 @@ description: 使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。当用
 | `workflow_inbox_mark` | 标记 inbox 条目状态 | `instance_id`, `entry_ids`, `status` |
 | `workflow_validate_template` | 校验模板健康状态 | `name` |
 | `workflow_memory_recommend` | 推荐与步骤相关的项目记忆 | `step_name`, `limit`(可选) |
+| `wechat_send_message` | 通过企业微信给员工发送消息 | `name`(必填), `msg`(必填), `nonum`(可选) |
 
 **响应格式**：所有工具返回 JSON 信封 `{ "ok": true, "data": {...} }` 或 `{ "ok": false, "error": { "code": "...", "message": "..." } }`。
 
