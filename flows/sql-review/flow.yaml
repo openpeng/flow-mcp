@@ -35,23 +35,23 @@ steps:
     description: 使用浏览器打开 SQL 审核页面，检查是否存在"审核通过"按钮，判断是否支持审核
     checkpoint:
       required_outputs:
-        - page_loaded:
-            type: boolean
-        - has_approve_button:
-            type: boolean
-        - page_status:
-            type: string
-            min_length: 10
+        page_loaded:
+          type: boolean
+        has_approve_button:
+          type: boolean
+        page_status:
+          type: string
+          min_length: 10
       conditions:
         - natural: "浏览器已成功打开 SQL 审核页面，页面内容已加载"
-          check: "page_loaded == true"
+          check: "outputs.page_loaded != null"
           help: "请使用浏览器工具打开 {{sql_review_url}}，确保页面完全加载"
         - natural: "已检查页面是否包含'审核通过'或类似审核按钮，并记录了页面状态"
-          check: "page_status != null AND len(page_status) >= 10"
+          check: "outputs.page_status != null AND len(outputs.page_status) > 10"
           help: "请仔细检查页面内容，确认是否有审核按钮，并用 page_status 描述当前页面状态"
     next:
       branches:
-        - condition: "has_approve_button == true"
+        - condition: "outputs.has_approve_button != null"
           step: review_sql_risk
       fallback: notify_unsupported
 
@@ -60,29 +60,29 @@ steps:
     description: 仔细阅读页面中的 SQL 语句，评估风险等级，检查是否有备份
     checkpoint:
       required_outputs:
-        - sql_content:
-            type: string
-            min_length: 10
-        - risk_level:
-            type: string
-        - risk_details:
-            type: string
-            min_length: 10
-        - has_backup:
-            type: boolean
+        sql_content:
+          type: string
+          min_length: 10
+        risk_level:
+          type: string
+        risk_details:
+          type: string
+          min_length: 10
+        has_backup:
+          type: boolean
       conditions:
         - natural: "已从页面中提取 SQL 语句内容"
-          check: "sql_content != null AND len(sql_content) >= 10"
+          check: "outputs.sql_content != null AND len(outputs.sql_content) > 10"
           help: "请从页面中提取待审核的 SQL 语句完整内容"
         - natural: "已评估 SQL 风险等级（high/medium/low）并提供了详细风险说明"
-          check: "risk_level != null AND risk_details != null AND len(risk_details) >= 10"
+          check: "outputs.risk_level != null AND outputs.risk_details != null AND len(outputs.risk_details) > 10"
           help: "请评估 SQL 风险等级，输出 high（高危）/ medium（中危）/ low（低危），并在 risk_details 中详细说明依据"
         - natural: "已检查 SQL 是否包含备份操作或已有备份声明"
-          check: "has_backup != null"
+          check: "outputs.has_backup != null"
           help: "请检查页面中是否有备份相关的声明或确认（如用户已勾选备份选项、页面提示已备份等），或 SQL 语句中是否包含备份操作"
     next:
       branches:
-        - condition: "risk_level == 'high' AND has_backup == false"
+        - condition: "outputs.risk_level == 'high'"
           step: confirm_risk
       fallback: approve_sql
 
@@ -91,17 +91,17 @@ steps:
     description: 向用户展示高风险 SQL 的详细信息，等待用户明确确认后继续
     checkpoint:
       required_outputs:
-        - user_confirmed:
-            type: boolean
-        - confirmation_reason:
-            type: string
+        user_confirmed:
+          type: boolean
+        confirmation_reason:
+          type: string
       conditions:
         - natural: "用户已明确确认是否继续提交高危 SQL（未备份），或选择放弃"
-          check: "user_confirmed != null"
+          check: "outputs.user_confirmed != null"
           help: "请向用户展示风险详情并等待明确回复，确认继续则设置 user_confirmed=true，放弃则设为 false"
     next:
       branches:
-        - condition: "user_confirmed == true"
+        - condition: "outputs.user_confirmed == 'true'"
           step: approve_sql
       fallback: notify_unsupported
 
@@ -110,17 +110,17 @@ steps:
     description: 在审核页面中点击"审核通过"按钮，提交审核结果
     checkpoint:
       required_outputs:
-        - approval_submitted:
-            type: boolean
-        - approval_result:
-            type: string
-            min_length: 10
+        approval_submitted:
+          type: boolean
+        approval_result:
+          type: string
+          min_length: 10
       conditions:
         - natural: "已成功定位并点击'审核通过'按钮，审核结果已提交"
-          check: "approval_submitted == true"
+          check: "outputs.approval_submitted != null"
           help: "请在页面上找到'审核通过'按钮并点击，确认提交成功"
         - natural: "已确认审核提交结果"
-          check: "approval_result != null AND len(approval_result) >= 10"
+          check: "outputs.approval_result != null AND len(outputs.approval_result) > 10"
           help: "请记录提交后的页面反馈信息"
     next: notify_result
 
@@ -129,14 +129,14 @@ steps:
     description: 将最终的审核结果通知给提审人
     checkpoint:
       required_outputs:
-        - notification_done:
-            type: boolean
-        - final_status:
-            type: string
-            min_length: 10
+        notification_done:
+          type: boolean
+        final_status:
+          type: string
+          min_length: 10
       conditions:
         - natural: "已将审核结果通知给提审人 {{requester}}"
-          check: "notification_done == true"
+          check: "outputs.notification_done != null"
           help: "请总结本次审核的完整过程和结果，通知相关方"
     next: null
 
@@ -145,13 +145,13 @@ steps:
     description: 向提审人说明当前页面不支持审核或审核已完成
     checkpoint:
       required_outputs:
-        - notified:
-            type: boolean
-        - reason:
-            type: string
-            min_length: 10
+        notified:
+          type: boolean
+        reason:
+          type: string
+          min_length: 10
       conditions:
         - natural: "已向提审人 {{requester}} 说明无法审核的原因"
-          check: "notified == true"
+          check: "outputs.notified != null"
           help: "请根据 page_status 说明为什么无法继续审核，并将情况告知提审人"
     next: null
