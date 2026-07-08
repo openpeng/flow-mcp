@@ -127,6 +127,8 @@ steps:
   - id: notify_result
     name: 通知审核结果
     description: 将最终的审核结果通知给提审人
+    tools:
+      - wechat_send_message
     checkpoint:
       required_outputs:
         notification_done:
@@ -134,10 +136,15 @@ steps:
         final_status:
           type: string
           min_length: 10
+        wechat_notified:
+          type: boolean
       conditions:
         - natural: "已将审核结果通知给提审人 {{requester}}"
           check: "outputs.notification_done != null"
           help: "请总结本次审核的完整过程和结果，通知相关方"
+        - natural: "已通过企微通知提审人审核结果"
+          check: "outputs.wechat_notified != null"
+          help: "请使用 wechat_send_message 工具向提审人发送审核结果通知"
     next: null
 
   - id: notify_unsupported

@@ -1,0 +1,166 @@
+name: code-review
+description: 代码评审流程 -- 用户提供合并请求（MR/PR）地址，自动解析项目信息，准备本地仓库，分析commit历史，审查代码改动（规范、影响、bug），最后在合并请求页面发布评审意见。
+routing:
+  keywords: ["代码评审", "codereview", "review", "MR", "PR", "合并请求", "代码审查", "代码检查"]
+  description_short: "代码评审流程（解析MR→准备仓库→分析提交→审查代码→发布意见）"
+  triggers:
+    - "(评审|review).*代码"
+    - "(代码|codereview).*review"
+    - "MR.*评审"
+    - "PR.*review"
+    - "合并请求.*(评审|审查)"
+  priority: 7
+
+params:
+  mr_url:
+    type: string
+    required: true
+    description: 合并请求（MR/PR）的完整URL地址，例如 GitLab/GitHub 的 MR 页面链接
+  local_base_path:
+    type: string
+    required: false
+    default: "e:/gaodun"
+    description: 本地项目根目录，默认为 e:/gaodun
+
+global_context: |
+  # 代码评审全局约束
+  - 本地项目代码必须存放在 `{{local_base_path}}/<项目名>` 目录下
+  - 使用 git 命令操作本地仓库，不使用 SourceTree GUI 操作
+  - 评审意见必须具体、 actionable，指出问题位置和改进建议
+  - 严重级别：P0（阻塞性bug/安全问题）、P1（功能缺陷）、P2（代码规范/建议）
+  - 如果没有 P0 级别问题，最终需要在评论区额外回复一条内容为 "1" 的评论
+
+token_budget:
+  total: 100000
+  per_step: 20000
+
+optimization:
+  mode: off
+
+steps:
+  - id: parse_mr
+    name: 解析合并请求信息
+    description: 从用户提供的MR URL中解析出项目名、源分支、目标分支、MR ID等关键信息
+    checkpoint:
+      required_outputs:
+        project_name:
+          type: string
+          min_length: 1
+        source_branch:
+          type: string
+          min_length: 1
+        target_branch:
+          type: string
+          min_length: 1
+        mr_id:
+          type: string
+          min_length: 1
+        repo_local_path:
+          type: string
+          min_length: 5
+      conditions:
+        - natural: "已从MR URL中成功解析出项目名"
+          check: "outputs.project_name != null AND len(outputs.project_name) > 0"
+          help: "请从 mr_url 中解析出项目名，并确认本地路径 {{local_base_path}}/项目名 存在"
+        - natural: "已确定源分支和目标分支"
+          check: "outputs.source_branch != null AND outputs.target_branch != null"
+          help: "请从MR URL或页面内容中确定源分支（要合并的分支）和目标分支（合并到的分支）"
+        - natural: "已确认本地仓库路径存在"
+          check: "outputs.repo_local_path != null AND len(outputs.repo_local_path) > 5"
+          help: "请检查本地路径是否存在，如果不存在请告知用户"
+    next: prepare_repo
+
+  - id: prepare_repo
+    name: 准备本地仓库
+    description: 进入本地项目目录，使用git worktree模式创建独立工作目录来检出源分支和目标分支，避免污染本地当前分支，然后获取代码差异
+    checkpoint:
+      required_outputs:
+        repo_ready:
+          type: boolean
+        git_fetch_result:
+          type: string
+          min_length: 5
+        diff_content:
+          type: string
+          min_length: 10
+        source_worktree_path:
+          type: string
+          min_length: 5
+        target_worktree_path:
+          type: string
+          min_length: 5
+      conditions:
+        - natural: "本地仓库已准备好，worktree已创建"
+          check: "outputs.repo_ready != null"
+          help: "请进入本地仓库，执行 git fetch 获取远程最新代码，然后使用 git worktree add 创建源分支和目标分支的独立工作目录"
+        - natural: "已获取源分支到目标分支的代码差异"
+          check: "outputs.diff_content != null AND len(outputs.diff_content) > 10"
+          help: "请使用 git diff 获取两个分支之间的差异内容"
+        - natural: "已记录源分支和目标分支的worktree路径"
+          check: "outputs.source_worktree_path != null AND outputs.target_worktree_path != null"
+          help: "请记录创建的worktree目录绝对路径"
+    next: analyze_commits
+
+  - id: analyze_commits
+    name: 分析提交历史
+    description: 分析源分支相对于目标分支的所有commit信息，评估提交质量
+    checkpoint:
+      required_outputs:
+        commit_analysis:
+          type: string
+          min_length: 20
+        commit_count:
+          type: number
+      conditions:
+        - natural: "已分析所有相关commit的提交信息"
+          check: "outputs.commit_analysis != null AND len(outputs.commit_analysis) > 20"
+          help: "请使用 git log 获取提交历史，分析每个commit的信息是否清晰、是否符合提交规范"
+        - natural: "已统计提交数量"
+          check: "outputs.commit_count != null"
+          help: "请统计本次MR包含的commit数量"
+    next: review_code
+
+  - id: review_code
+    name: 审查代码改动
+    description: 详细审查代码diff，检查代码规范、潜在bug、影响范围、处理方式是否合适
+    checkpoint:
+      required_outputs:
+        review_summary:
+          type: string
+          min_length: 30
+        issues_found:
+          type: array
+        has_p0_bug:
+          type: boolean
+      conditions:
+        - natural: "已完成代码审查并生成评审摘要"
+          check: "outputs.review_summary != null AND len(outputs.review_summary) > 30"
+          help: "请逐文件审查代码改动，从功能正确性、代码规范、性能、安全性等维度评估"
+        - natural: "已明确是否存在P0级别问题"
+          check: "outputs.has_p0_bug != null"
+          help: "请判断是否存在阻塞性bug或安全问题，设置 has_p0_bug 为 true 或 false"
+    next: post_review
+
+  - id: post_review
+    name: 发布评审意见
+    description: 打开MR页面，检查MR状态（如已合并则跳过），在评论区发布完整的评审意见，如果没有P0 bug则额外回复"1"
+    checkpoint:
+      required_outputs:
+        review_posted:
+          type: boolean
+        p0_check_comment:
+          type: boolean
+        mr_status:
+          type: string
+          min_length: 1
+      conditions:
+        - natural: "已检查MR状态并记录"
+          check: "outputs.mr_status != null"
+          help: "请检查MR是否已合并或关闭，如果已合并则跳过评论发布"
+        - natural: "已在MR页面发布评审意见（或因MR已合并跳过）"
+          check: "outputs.review_posted != null"
+          help: "请使用浏览器打开MR页面，找到评论区，发布完整的评审意见。如果MR已合并/关闭无法评论，请设置 review_posted=true 并在备注中说明"
+        - natural: "已根据是否存在P0 bug完成额外回复"
+          check: "outputs.p0_check_comment != null"
+          help: "如果没有P0 bug，请在评论区额外回复一条内容为 '1' 的评论；如果有P0 bug或MR已合并则设置 p0_check_comment=false 并说明原因"
+    next: null
