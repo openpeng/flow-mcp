@@ -17,6 +17,9 @@ instances/
 .env.*
 !.env.example
 
+# npm config (may contain secrets)
+.npmrc
+
 # Package manager caches
 .npm/
 .yarn/
