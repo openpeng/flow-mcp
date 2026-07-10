@@ -6,8 +6,11 @@ import { assertPromptSize } from './limits.js';
 import { assertStepId, assertTemplateName, safeJoin } from './security.js';
 import type {
   CreateTemplateOptions,
+  ParamDef,
   ParamsDef,
   RequiredOutputDef,
+  RouteRecommendation,
+  RouteResult,
   TemplateSummary,
   TemplateRouteMatch,
   TemplateRouting,
@@ -322,6 +325,72 @@ export function buildRoutingTable(overrides: ConfigOverrides = {}): string {
   }
 
   return lines.join('\n');
+}
+
+/** Build trigger phrases for SKILL.md frontmatter from all templates' routing metadata */
+export function buildTriggerPhrases(overrides: ConfigOverrides = {}): string {
+  const templates = getAllTemplatesRouting(overrides).filter(t => t.routing.keywords.length > 0);
+  if (templates.length === 0) return '';
+
+  const phrases = templates.map(t => {
+    const kws = t.routing.keywords.slice(0, 3).join('/');
+    return `"${t.routing.description_short}（${kws}）"`;
+  });
+
+  return `当用户提到 ${phrases.join('、')} 等场景时使用此 skill。`;
+}
+
+/** Route a user intent to the best matching template, with rich context for AI activation */
+export function routeTemplate(intent: string, overrides: ConfigOverrides = {}): RouteResult {
+  const matches = matchTemplatesByIntent(intent, overrides);
+  if (matches.length === 0) {
+    return { recommended: null, alternatives: [] };
+  }
+
+  const [top, ...rest] = matches;
+
+  // Read params definition and first step from the recommended template
+  let params: { name: string; type: string; required: boolean; description?: string }[] = [];
+  let firstStep: { id: string; title: string } | null = null;
+  try {
+    const tmpl = loadTemplate(top.template, overrides);
+    if (tmpl.params && typeof tmpl.params === 'object' && !Array.isArray(tmpl.params)) {
+      const paramDefs = tmpl.params as ParamsDef;
+      params = Object.entries(paramDefs).map(([name, def]: [string, ParamDef]) => ({
+        name,
+        type: def.type,
+        required: def.required,
+        description: def.description,
+      }));
+    }
+    if (tmpl.steps.length > 0) {
+      firstStep = { id: tmpl.steps[0].id, title: tmpl.steps[0].name };
+    }
+  } catch {
+    /* ignore load errors — still return match info without params/first_step */
+  }
+
+  // Clean trigger: prefix from keywords_matched for friendly display
+  const cleanKeywords = top.keywords_matched.map(k => (k.startsWith('trigger:') ? k.slice(8) : k));
+  const matchReason = cleanKeywords.length > 0
+    ? `命中关键词 ${cleanKeywords.map(k => `"${k}"`).join('、')}`
+    : '触发模式匹配';
+
+  const recommended: RouteRecommendation = {
+    template: top.template,
+    description: top.description,
+    description_short: top.description_short,
+    score: top.score,
+    keywords_matched: cleanKeywords,
+    match_reason: matchReason,
+    params,
+    first_step: firstStep,
+  };
+
+  return {
+    recommended,
+    alternatives: rest.slice(0, 4),
+  };
 }
 
 /** List templates with routing info, optionally filtered by query */

@@ -6,7 +6,7 @@ import { queryEvents } from '../engine/event-log.js';
 import { buildDashboard } from '../engine/dashboard-engine.js';
 import { saveInboxEntries, listInboxEntries, markInboxEntries } from '../engine/inbox-store.js';
 import { buildWorklog } from '../engine/worklog-engine.js';
-import { loadPromptSnapshots, listTemplates, loadTemplate, listTemplatesWithRouting } from '../engine/template-store.js';
+import { loadPromptSnapshots, listTemplates, loadTemplate, listTemplatesWithRouting, routeTemplate } from '../engine/template-store.js';
 import { validateTemplateControlPlane } from '../engine/template-validator.js';
 import {
   advanceWorkflow,
@@ -23,6 +23,17 @@ import { findRelevantMemories } from '../engine/memory-lookup.js';
 import { sendWechatMessage } from './wechat-notify.js';
 
 export const workflowTools: Tool[] = [
+  {
+    name: 'workflow_route',
+    description: '当用户提出任何开发任务、问题排查、SQL审核、代码评审、发版等需求时，先调用此工具判断是否有匹配的工作流模板。返回推荐模板+匹配理由+所需参数+第一步指引+备选模板。这是任务开始的第一步，无匹配时返回自由发挥建议。比 workflow_list_templates 更聚焦于"推荐哪个模板"而非"列出全部"。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        intent: { type: 'string', description: '用户的任务描述（自然语言）' },
+      },
+      required: ['intent'],
+    },
+  },
   {
     name: 'workflow_list_templates',
     description: 'List available workflow templates. Supports optional query parameter for intent-based keyword matching and ranking.',
@@ -284,6 +295,39 @@ export const workflowTools: Tool[] = [
 export async function handleWorkflowTool(name: string, args: Record<string, unknown> = {}) {
   try {
     switch (name) {
+      case 'workflow_route': {
+        const intent = requiredString(args, 'intent');
+        const result = routeTemplate(intent);
+        if (!result.recommended) {
+          return envelope({
+            intent,
+            recommended: null,
+            alternatives: result.alternatives,
+            note: '未找到匹配的工作流模板。你可以直接描述任务，我会自由发挥；或者调用 workflow_list_templates 查看全部模板。',
+          });
+        }
+        const rec = result.recommended;
+        return envelope({
+          intent,
+          recommended: {
+            template: rec.template,
+            description: rec.description,
+            description_short: rec.description_short,
+            score: rec.score,
+            match_reason: rec.match_reason,
+            params: rec.params,
+            first_step: rec.first_step,
+          },
+          alternatives: result.alternatives.map(a => ({
+            template: a.template,
+            description: a.description,
+            description_short: a.description_short,
+            score: a.score,
+            keywords_matched: a.keywords_matched.filter(k => !k.startsWith('trigger:')),
+          })),
+          start_hint: `workflow_start template="${rec.template}" params={${rec.params.map(p => `"${p.name}":"..."`).join(', ')}}`,
+        });
+      }
       case 'workflow_list_templates': {
         const query = optionalString(args, 'query');
         if (query) {

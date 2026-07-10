@@ -122,6 +122,29 @@ export interface TemplateRouteMatch {
   step_count?: number;
 }
 
+/** Phase 8: routeTemplate 推荐结果 — 比 TemplateRouteMatch 更丰富，含 params 和第一步指引 */
+export interface RouteRecommendation {
+  template: string;
+  description: string;
+  description_short: string;
+  score: number;
+  /** 命中关键词（已清理 trigger: 前缀） */
+  keywords_matched: string[];
+  /** 匹配理由文案，如 "命中关键词 排查、报错" */
+  match_reason: string;
+  /** 模板所需参数定义 */
+  params: { name: string; type: string; required: boolean; description?: string }[];
+  /** 第一步指引 */
+  first_step: { id: string; title: string } | null;
+}
+
+/** Phase 8: routeTemplate 完整返回 — 推荐模板 + 备选列表 */
+export interface RouteResult {
+  recommended: RouteRecommendation | null;
+  /** Top 2..5 备选模板 */
+  alternatives: TemplateRouteMatch[];
+}
+
 export type StepStatus = 'pending' | 'in_progress' | 'done' | 'skipped';
 export type WorkflowStatus = 'active' | 'completed';
 

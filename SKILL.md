@@ -1,6 +1,9 @@
 ---
 name: oflow-mcp
-description: 使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。当用户提到"开始工作流"、"继续工作流"、"当前步骤"、"推进到下一步"时使用此 skill。
+description: >-
+  使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。
+  当用户提到"开始工作流"、"继续工作流"、"当前步骤"、"推进到下一步"时使用此 skill。
+  当用户提出开发任务（分析/设计/验证）、代码评审（MR/PR/Review）、SQL 审核（DMS/审核页面）、公众号发文（微信/公众号/发布）等场景时，优先使用 workflow_route 匹配最佳模板。
 ---
 
 # oflow-mcp — AI 操作指南
@@ -22,7 +25,8 @@ description: 使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。当用
 
 | 工具 | 用途 | 关键参数 |
 |------|------|----------|
-| `workflow_list_templates` | 列出可用模板 | 无 |
+| `workflow_route` | **任务入口**：根据用户意图推荐最佳工作流模板，返回匹配理由+所需参数+第一步指引+备选模板 | `intent` |
+| `workflow_list_templates` | 列出可用模板（带 query 时可做关键词匹配） | `query`（可选） |
 | `workflow_get_template` | 获取模板详情和步骤摘要 | `name` |
 | `workflow_start` | 启动工作流实例 | `template`, `params`, `alias`(可选) |
 | `workflow_current` | 获取当前步骤 + 渲染后的 prompt（默认附带相关记忆） | `instance_id`(可选), `include_memories`(可选) |
@@ -49,15 +53,33 @@ description: 使用 oflow-mcp MCP 工具执行 AI Agent 原生工作流。当用
 
 ## 核心工作流
 
-### 阶段 1：识别用户意图
+### 阶段 1：识别用户意图（优先路由）
+
+**任何新任务开始时，先调用 `workflow_route`** 判断是否有匹配的工作流模板：
+
+```typescript
+// 示例：用户说"帮我评审这个 MR"
+workflow_route(intent: "帮我评审这个 MR https://gitlab.example.com/...")
+// 返回：推荐 code-review 模板 + 所需参数(mr_url) + 第一步(parse_mr) + 启动命令
+```
 
 | 用户说 | 你应该做 |
 |--------|---------|
-| "开始 basic-dev 工作流" | `workflow_start` |
+| **任何新任务/需求/请求** | 先 `workflow_route(intent: "用户原话")` 获取推荐模板 |
+| "开始 basic-dev 工作流" | `workflow_start`（已知模板时可直接启动） |
 | "继续" / "下一步" | `workflow_current` → 按 prompt 执行 → `workflow_advance` |
 | "进度怎么样了？" | `workflow_status` 或 `workflow_dashboard` |
 | "检查 current 步骤" | `workflow_current`（默认附带相关记忆摘要） |
 | "有什么相关记忆" | `workflow_memory_recommend step_name="需求分析"` |
+
+### 可用流程模板路由表
+
+| 使用场景 | 模板 | 关键词触发 |
+|------|------|------|
+| 基础开发流程（分析→设计→验证） | `basic-dev` | 开发, 实现, 需求, 编程, coding, develop, 分析, 设计, 验证 |
+| 代码评审流程（解析MR→准备仓库→分析提交→审查代码→发布意见） | `code-review` | 代码评审, codereview, review, MR, PR, 合并请求, 代码审查, 代码检查 |
+| SQL审核流程（打开页面→审查风险→确认/通过→通知结果） | `sql-review` | SQL, 审核, DMS, 数据库, 工单, sql-review |
+| 公众号发文流程（准备→转换→草稿→发布→归档） | `wechat-publish` | 公众号, 微信, 发文, 发布, 推送, 文章, publish |
 
 ### 阶段 2：启动工作流
 
