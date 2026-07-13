@@ -1,4 +1,4 @@
-# flow-mcp 全自动安装指南
+# oflow-mcp 全自动安装指南
 
 > **本文档面向 AI Agent**。AI 读取此文档后，应按步骤自动执行安装，完成后自动验证。
 > 用户只需提供一个指向此文档的 URL，AI 即可全自动完成所有安装步骤。
@@ -57,8 +57,8 @@ uname -s                    # macOS / Linux
 ```powershell
 # Windows (PowerShell)
 cd <WORKSPACE>              # 切换到用户指定的或默认的工作目录
-git clone https://gitee.com/<OWNER>/flow-mcp.git   # 或 GitHub 地址
-cd flow-mcp
+git clone https://gitee.com/<OWNER>/oflow-mcp.git   # 或 GitHub 地址
+cd oflow-mcp
 npm install
 npm run build
 npm link                    # 注册全局命令
@@ -67,8 +67,8 @@ npm link                    # 注册全局命令
 ```bash
 # macOS / Linux (Bash)
 cd <WORKSPACE>
-git clone https://gitee.com/<OWNER>/flow-mcp.git
-cd flow-mcp
+git clone https://gitee.com/<OWNER>/oflow-mcp.git
+cd oflow-mcp
 npm install
 npm run build
 sudo npm link               # 注册全局命令
@@ -77,8 +77,8 @@ sudo npm link               # 注册全局命令
 ### 方式 B：从 npm 安装（适用于普通用户，需先 npm publish）
 
 ```bash
-npm install -g flow-mcp
-# 安装后 flow-mcp 命令自动可用，无需单独 npm link
+npm install -g oflow-mcp
+# 安装后 oflow-mcp 命令自动可用，无需单独 npm link
 ```
 
 **编译完成后验证：**
